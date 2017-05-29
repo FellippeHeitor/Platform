@@ -7,6 +7,14 @@ CONST objBonus = 4
 CONST objBackground = 5
 CONST objBlock = 6
 
+DIM SHARED kinds(1 TO 6) AS STRING
+kinds(1) = "Hero"
+kinds(2) = "Enemy"
+kinds(3) = "Floor"
+kinds(4) = "Bonus"
+kinds(5) = "Background"
+kinds(6) = "Block"
+
 CONST objShapeRect = 0
 CONST objShapeRound = 1
 CONST g = 1
@@ -226,20 +234,28 @@ SUB UpdateScreen
     DIM this AS Objects
     FOR i = 1 TO TotalObjects
         this = Object(i)
-        IF this.kind = objBackground THEN thisCamera = Camera / 2 ELSE thisCamera = Camera
-        IF this.taken THEN GOTO Continue
-        IF this.shape = objShapeRect THEN
-            LINE (this.x + thisCamera, this.y)-STEP(this.w, this.h), this.color, BF
-            LINE (this.x + thisCamera, this.y)-STEP(this.w, this.h), _RGB32(0, 0, 0), B
-            '_PRINTSTRING (this.x + Camera, this.y), LTRIM$(STR$(this.x)) + STR$(this.x + this.w)
-        ELSEIF this.shape = objShapeRound THEN
-            FOR k = 1 TO this.w
-                CIRCLE (thisCamera + this.x + this.w / 2, this.y + this.h / 2), k, this.color, , , this.w / this.h
-            NEXT
-            CIRCLE (thisCamera + this.x + this.w / 2, this.y + this.h / 2), this.w, _RGB32(0, 0, 0), , , this.w / this.h
+        IF this.kind > 0 THEN
+            IF this.kind = objBackground THEN thisCamera = Camera / 2 ELSE thisCamera = Camera
+            IF this.taken THEN GOTO Continue
+            IF this.x + this.w + thisCamera < 0 AND this.shape <> objShapeRound THEN
+                GOTO Continue
+            ELSEIF thisCamera + this.x + this.w + this.w / 2 < 0 AND this.shape = objShapeRound THEN
+                GOTO Continue
+            END IF
+            IF this.x + thisCamera > _WIDTH THEN GOTO Continue
+            IF this.shape = objShapeRect THEN
+                LINE (this.x + thisCamera, this.y)-STEP(this.w, this.h), this.color, BF
+                LINE (this.x + thisCamera, this.y)-STEP(this.w, this.h), _RGB32(0, 0, 0), B
+                '_PRINTSTRING (this.x + Camera, this.y), LTRIM$(STR$(this.x)) + STR$(this.x + this.w)
+            ELSEIF this.shape = objShapeRound THEN
+                FOR k = 1 TO this.w
+                    CIRCLE (thisCamera + this.x + this.w / 2, this.y + this.h / 2), k, this.color, , , this.w / this.h
+                NEXT
+                CIRCLE (thisCamera + this.x + this.w / 2, this.y + this.h / 2), this.w, _RGB32(0, 0, 0), , , this.w / this.h
+            END IF
+            'IF this.kind = objHero AND this.landedOn > 0 THEN _PRINTSTRING (this.x + Camera, this.y - _FONTHEIGHT), "Landed on" + STR$(this.landedOn)
+            PRINT i; kinds(this.kind)
         END IF
-        'IF this.kind = objHero AND this.landedOn > 0 THEN _PRINTSTRING (this.x + Camera, this.y - _FONTHEIGHT), "Landed on" + STR$(this.landedOn)
-
         Continue:
     NEXT
 
