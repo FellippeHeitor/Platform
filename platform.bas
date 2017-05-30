@@ -36,7 +36,7 @@ END TYPE
 REDIM SHARED Object(1 TO 100) AS Objects
 DIM SHARED TotalObjects AS LONG
 DIM SHARED Hero AS LONG, NewObj AS LONG
-DIM SHARED Dead AS _BYTE, Camera AS LONG
+DIM SHARED Dead AS _BYTE, CameraX AS LONG, CameraY AS LONG
 DIM SHARED Points AS LONG
 
 SCREEN _NEWIMAGE(800, 600, 32)
@@ -60,15 +60,26 @@ Level1:
 NewObj = AddObject(objBackground, 0, 0, _WIDTH * 2, _HEIGHT, _RGB32(61, 161, 222))
 
 FOR i = 1 TO 10
-    NewObj = AddObject(objBackground, RND * _WIDTH * 2, RND * _HEIGHT * .5, 50, 100, _RGB32(255, 255, 255))
+    NewObj = AddObject(objBackground, RND * _WIDTH * 2, RND * -_HEIGHT, 50, 100, _RGB32(255, 255, 255))
     Object(NewObj).shape = objShapeRound
 NEXT
 
 NewObj = AddObject(objFloor, 20, _HEIGHT - _HEIGHT / 5, _WIDTH * 1.5, 150, _RGB32(111, 89, 50))
 NewObj = AddObject(objFloor, 1300, _HEIGHT - _HEIGHT / 5, _WIDTH * 1.5, 150, _RGB32(111, 89, 50))
 
-NewObj = AddObject(objFloor, 400, 400, 160, 10, _RGB32(111, 89, 50))
-NewObj = AddObject(objFloor, 575, 330, 160, 10, _RGB32(111, 89, 50))
+NewObj = AddObject(objFloor, 110, 400, 110, 10, _RGB32(111, 89, 50))
+
+NewObj = AddObject(objFloor, 400, 400, 110, 10, _RGB32(111, 89, 50))
+NewObj = AddObject(objFloor, 575, 330, 110, 10, _RGB32(111, 89, 50))
+NewObj = AddObject(objFloor, 700, 260, 110, 10, _RGB32(111, 89, 50))
+NewObj = AddObject(objFloor, 875, 200, 110, 10, _RGB32(111, 89, 50))
+NewObj = AddObject(objFloor, 1000, 140, 110, 10, _RGB32(111, 89, 50))
+NewObj = AddObject(objFloor, 1175, 70, 110, 10, _RGB32(111, 89, 50))
+NewObj = AddObject(objFloor, 1000, 10, 110, 10, _RGB32(111, 89, 50))
+NewObj = AddObject(objFloor, 875, -50, 110, 10, _RGB32(111, 89, 50))
+NewObj = AddObject(objFloor, 700, -110, 110, 10, _RGB32(111, 89, 50))
+
+NewObj = AddObject(objBlock, 20, 400, 25, 25, _RGB32(216, 166, 50))
 
 NewObj = AddObject(objBlock, 200, _HEIGHT - _HEIGHT / 5 - 16, 15, 15, _RGB32(216, 166, 50))
 NewObj = AddObject(objBlock, 216, _HEIGHT - _HEIGHT / 5 - 16, 15, 15, _RGB32(216, 166, 50))
@@ -77,15 +88,16 @@ NewObj = AddObject(objBlock, 216, _HEIGHT - _HEIGHT / 5 - 32, 15, 15, _RGB32(216
 NewObj = AddObject(objBlock, 232, _HEIGHT - _HEIGHT / 5 - 32, 15, 15, _RGB32(216, 166, 50))
 NewObj = AddObject(objBlock, 232, _HEIGHT - _HEIGHT / 5 - 48, 15, 15, _RGB32(216, 166, 50))
 
-NewObj = AddObject(objBonus, 800, 270, 20, 10, _RGB32(249, 244, 55))
+NewObj = AddObject(objBonus, 800, 270, 15, 10, _RGB32(249, 244, 55))
 Object(NewObj).shape = objShapeRound
 
-NewObj = AddObject(objBonus, 820, 320, 20, 10, _RGB32(249, 244, 55))
+NewObj = AddObject(objBonus, 820, 320, 15, 10, _RGB32(249, 244, 55))
 Object(NewObj).shape = objShapeRound
 
-NewObj = AddObject(objBonus, 1200, _HEIGHT - _HEIGHT / 5 - 22, 20, 10, _RGB32(249, 244, 55))
+NewObj = AddObject(objBonus, 1200, _HEIGHT - _HEIGHT / 5 - 22, 15, 10, _RGB32(249, 244, 55))
 Object(NewObj).shape = objShapeRound
 
+NewObj = AddObject(objEnemy, 1200, _HEIGHT - _HEIGHT / 5 - 22, 15, 10, _RGB32(150, 89, 238))
 
 Hero = AddObject(objHero, 25, _HEIGHT - _HEIGHT / 5 - 22, 10, 20, _RGB32(127, 244, 127))
 RETURN
@@ -111,6 +123,7 @@ FUNCTION AddObject (Kind AS INTEGER, x AS SINGLE, y AS SINGLE, w AS SINGLE, h AS
 END FUNCTION
 
 SUB ProcessInput
+    STATIC JumpButton AS _BYTE
     IF _KEYDOWN(19712) AND NOT Dead THEN
         IF _KEYDOWN(100306) THEN
             Object(Hero).x = Object(Hero).x + 1
@@ -136,7 +149,12 @@ SUB ProcessInput
         END IF
     END IF
     IF _KEYDOWN(18432) AND NOT Dead THEN
-        IF Object(Hero).landedOn > 0 THEN Object(Hero).yv = -20: Object(Hero).landedOn = 0
+        IF NOT JumpButton THEN
+            JumpButton = true
+            IF Object(Hero).landedOn > 0 THEN Object(Hero).yv = -20: Object(Hero).landedOn = 0
+        END IF
+    ELSEIF NOT _KEYDOWN(18432) THEN
+        IF JumpButton THEN JumpButton = false
     END IF
     IF _KEYDOWN(13) AND Dead THEN
         Dead = 0
@@ -152,6 +170,11 @@ END SUB
 SUB DoPhysics
     FOR i = 1 TO TotalObjects
         IF Object(i).kind = objHero OR Object(i).kind = objEnemy THEN
+
+            IF Object(i).kind = objEnemy THEN
+                IF Object(Hero).x < Object(i).x THEN Object(i).xv = -1.5 ELSE Object(i).xv = 1.5
+            END IF
+
             Object(i).x = Object(i).x + Object(i).xv
             Object(i).y = Object(i).y + Object(i).yv
 
@@ -160,6 +183,23 @@ SUB DoPhysics
             END IF
 
             FOR j = 1 TO TotalObjects
+
+                IF Object(i).yv < 0 THEN
+                    IF Object(j).kind = objBlock THEN
+                        IF Object(i).x + Object(i).w > Object(j).x AND Object(i).x < Object(j).x + Object(j).w THEN
+                            IF Object(i).y > Object(j).y AND Object(i).y < Object(j).y + Object(j).h + 1 THEN
+                                Object(i).yv = 2
+                                Object(i).y = Object(i).y + 2
+                                IF Object(j).taken = false THEN
+                                    Object(j).taken = true
+                                    Object(j).color = _RGB32(122, 100, 78)
+                                END IF
+                                EXIT FOR
+                            END IF
+                        END IF
+                    END IF
+                END IF
+
                 IF Object(j).kind = objBonus AND Object(j).taken = false THEN
                     IF Object(i).y + Object(i).h >= Object(j).y AND Object(i).y <= Object(j).y + Object(j).h THEN
                         IF Object(i).x + Object(i).w > Object(j).x AND Object(i).x < Object(j).x + Object(j).w THEN
@@ -171,11 +211,12 @@ SUB DoPhysics
                 END IF
 
                 IF Object(i).xv > 0 THEN
-                    IF Object(j).kind = objBlock THEN
+                    IF Object(j).kind = objBlock OR Object(j).kind = objEnemy THEN
                         IF Object(i).y + Object(i).h >= Object(j).y AND Object(i).y <= Object(j).y + Object(j).h THEN
                             IF Object(i).x + Object(i).w > Object(j).x AND Object(i).x < Object(j).x + Object(j).w THEN
                                 Object(i).x = Object(j).x - Object(i).w - 1
                                 Object(i).xv = 0
+                                IF Object(j).kind = objEnemy AND Object(j).taken = false THEN Dead = true: Object(j).taken = true
                                 EXIT FOR
                             END IF
                         END IF
@@ -219,45 +260,62 @@ SUB DoPhysics
         END IF
     NEXT
 
-    IF Object(Hero).x + Camera > _WIDTH / 2 THEN
-        Camera = _WIDTH / 2 - Object(Hero).x
-    ELSEIF Object(Hero).x + Camera < _WIDTH / 5 THEN
-        Camera = _WIDTH / 5 - Object(Hero).x
+    IF Object(Hero).x + CameraX > _WIDTH / 2 THEN
+        CameraX = _WIDTH / 2 - Object(Hero).x
+    ELSEIF Object(Hero).x + CameraX < _WIDTH / 5 THEN
+        CameraX = _WIDTH / 5 - Object(Hero).x
     END IF
 
-    IF Camera > 0 THEN Camera = 0
+    IF Object(Hero).y + CameraY < _HEIGHT / 3 THEN
+        CameraY = -Object(Hero).y + _HEIGHT / 3
+    ELSEIF Object(Hero).y + CameraY > _HEIGHT / 2 THEN
+        CameraY = _HEIGHT / 2 - Object(Hero).y
+    END IF
+
+    IF CameraX > 0 THEN CameraX = 0
+    IF CameraY < 0 THEN CameraY = 0
 END SUB
 
 SUB UpdateScreen
     CLS
 
     DIM this AS Objects
+
     FOR i = 1 TO TotalObjects
         this = Object(i)
         IF this.kind > 0 THEN
-            IF this.kind = objBackground THEN thisCamera = Camera / 2 ELSE thisCamera = Camera
-            IF this.taken THEN GOTO Continue
-            IF this.x + this.w + thisCamera < 0 AND this.shape <> objShapeRound THEN
+            IF this.kind = objBackground THEN
+                thisCameraX = CameraX / 2
+                thisCameraY = CameraY / 2
+            ELSE
+                thisCameraX = CameraX
+                thisCameraY = CameraY
+            END IF
+            IF (this.kind = objEnemy OR this.kind = objBonus) AND this.taken THEN GOTO Continue
+            IF this.x + this.w + thisCameraX < 0 AND this.shape <> objShapeRound THEN
                 GOTO Continue
-            ELSEIF thisCamera + this.x + this.w + this.w / 2 < 0 AND this.shape = objShapeRound THEN
+            ELSEIF thisCameraX + this.x + this.w + this.w / 2 < 0 AND this.shape = objShapeRound THEN
                 GOTO Continue
             END IF
-            IF this.x + thisCamera > _WIDTH THEN GOTO Continue
+            IF this.x + thisCameraX > _WIDTH THEN GOTO Continue
             IF this.shape = objShapeRect THEN
-                LINE (this.x + thisCamera, this.y)-STEP(this.w, this.h), this.color, BF
-                LINE (this.x + thisCamera, this.y)-STEP(this.w, this.h), _RGB32(0, 0, 0), B
-                '_PRINTSTRING (this.x + Camera, this.y), LTRIM$(STR$(this.x)) + STR$(this.x + this.w)
+                LINE (this.x + thisCameraX, this.y + thisCameraY)-STEP(this.w, this.h), this.color, BF
+                LINE (this.x + thisCameraX, this.y + thisCameraY)-STEP(this.w, this.h), _RGB32(0, 0, 0), B
+                '_PRINTSTRING (this.x + CameraX, this.y), LTRIM$(STR$(this.x)) + STR$(this.x + this.w)
             ELSEIF this.shape = objShapeRound THEN
                 FOR k = 1 TO this.w
-                    CIRCLE (thisCamera + this.x + this.w / 2, this.y + this.h / 2), k, this.color, , , this.w / this.h
+                    CIRCLE (thisCameraX + this.x + this.w / 2, thisCameraY + this.y + this.h / 2), k, this.color, , , this.w / this.h
                 NEXT
-                CIRCLE (thisCamera + this.x + this.w / 2, this.y + this.h / 2), this.w, _RGB32(0, 0, 0), , , this.w / this.h
+                CIRCLE (thisCameraX + this.x + this.w / 2, thisCameraY + this.y + this.h / 2), this.w, _RGB32(0, 0, 0), , , this.w / this.h
             END IF
-            'IF this.kind = objHero AND this.landedOn > 0 THEN _PRINTSTRING (this.x + Camera, this.y - _FONTHEIGHT), "Landed on" + STR$(this.landedOn)
+            'IF this.kind = objHero AND this.landedOn > 0 THEN _PRINTSTRING (this.x + CameraX, this.y - _FONTHEIGHT), "Landed on" + STR$(this.landedOn)
             PRINT i; kinds(this.kind)
         END IF
         Continue:
     NEXT
+
+    PRINT "CameraX"; CameraX
+    PRINT "CameraY"; CameraY
 
     IF Dead THEN
         _PRINTSTRING (_WIDTH / 2 - _PRINTWIDTH("You're dead!") / 2, _HEIGHT / 2 - _FONTHEIGHT), "You're dead!"
