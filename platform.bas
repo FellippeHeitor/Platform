@@ -44,66 +44,17 @@ _PRINTMODE _KEEPBACKGROUND
 
 DO
     Level = Level + 1
-    ON Level GOSUB Level1, Level2
+    SetLevel Level
 
     DO
         ProcessInput
         DoPhysics
         UpdateScreen
-        _LIMIT 40
+        _LIMIT 35
     LOOP
 LOOP
 
 SYSTEM
-
-Level1:
-NewObj = AddObject(objBackground, 0, 0, _WIDTH * 2, _HEIGHT, _RGB32(61, 161, 222))
-
-FOR i = 1 TO 10
-    NewObj = AddObject(objBackground, RND * _WIDTH * 2, RND * -_HEIGHT, 50, 100, _RGB32(255, 255, 255))
-    Object(NewObj).shape = objShapeRound
-NEXT
-
-NewObj = AddObject(objFloor, 20, _HEIGHT - _HEIGHT / 5, _WIDTH * 1.5, 150, _RGB32(111, 89, 50))
-NewObj = AddObject(objFloor, 1300, _HEIGHT - _HEIGHT / 5, _WIDTH * 1.5, 150, _RGB32(111, 89, 50))
-
-NewObj = AddObject(objFloor, 110, 400, 110, 10, _RGB32(111, 89, 50))
-
-NewObj = AddObject(objFloor, 400, 400, 110, 10, _RGB32(111, 89, 50))
-NewObj = AddObject(objFloor, 575, 330, 110, 10, _RGB32(111, 89, 50))
-NewObj = AddObject(objFloor, 700, 260, 110, 10, _RGB32(111, 89, 50))
-NewObj = AddObject(objFloor, 875, 200, 110, 10, _RGB32(111, 89, 50))
-NewObj = AddObject(objFloor, 1000, 140, 110, 10, _RGB32(111, 89, 50))
-NewObj = AddObject(objFloor, 1175, 70, 110, 10, _RGB32(111, 89, 50))
-NewObj = AddObject(objFloor, 1000, 10, 110, 10, _RGB32(111, 89, 50))
-NewObj = AddObject(objFloor, 875, -50, 110, 10, _RGB32(111, 89, 50))
-NewObj = AddObject(objFloor, 700, -110, 110, 10, _RGB32(111, 89, 50))
-
-NewObj = AddObject(objBlock, 20, 400, 25, 25, _RGB32(216, 166, 50))
-
-NewObj = AddObject(objBlock, 200, _HEIGHT - _HEIGHT / 5 - 16, 15, 15, _RGB32(216, 166, 50))
-NewObj = AddObject(objBlock, 216, _HEIGHT - _HEIGHT / 5 - 16, 15, 15, _RGB32(216, 166, 50))
-NewObj = AddObject(objBlock, 232, _HEIGHT - _HEIGHT / 5 - 16, 15, 15, _RGB32(216, 166, 50))
-NewObj = AddObject(objBlock, 216, _HEIGHT - _HEIGHT / 5 - 32, 15, 15, _RGB32(216, 166, 50))
-NewObj = AddObject(objBlock, 232, _HEIGHT - _HEIGHT / 5 - 32, 15, 15, _RGB32(216, 166, 50))
-NewObj = AddObject(objBlock, 232, _HEIGHT - _HEIGHT / 5 - 48, 15, 15, _RGB32(216, 166, 50))
-
-NewObj = AddObject(objBonus, 800, 270, 15, 10, _RGB32(249, 244, 55))
-Object(NewObj).shape = objShapeRound
-
-NewObj = AddObject(objBonus, 820, 320, 15, 10, _RGB32(249, 244, 55))
-Object(NewObj).shape = objShapeRound
-
-NewObj = AddObject(objBonus, 1200, _HEIGHT - _HEIGHT / 5 - 22, 15, 10, _RGB32(249, 244, 55))
-Object(NewObj).shape = objShapeRound
-
-NewObj = AddObject(objEnemy, 1200, _HEIGHT - _HEIGHT / 5 - 22, 15, 10, _RGB32(150, 89, 238))
-
-Hero = AddObject(objHero, 25, _HEIGHT - _HEIGHT / 5 - 22, 10, 20, _RGB32(127, 244, 127))
-RETURN
-
-Level2:
-RETURN
 
 FUNCTION AddObject (Kind AS INTEGER, x AS SINGLE, y AS SINGLE, w AS SINGLE, h AS SINGLE, c AS _UNSIGNED LONG)
     TotalObjects = TotalObjects + 1
@@ -200,7 +151,7 @@ SUB DoPhysics
                     END IF
                 END IF
 
-                IF Object(j).kind = objBonus AND Object(j).taken = false THEN
+                IF Object(i).kind = objHero AND Object(j).kind = objBonus AND Object(j).taken = false THEN
                     IF Object(i).y + Object(i).h >= Object(j).y AND Object(i).y <= Object(j).y + Object(j).h THEN
                         IF Object(i).x + Object(i).w > Object(j).x AND Object(i).x < Object(j).x + Object(j).w THEN
                             Object(j).taken = true
@@ -216,7 +167,7 @@ SUB DoPhysics
                             IF Object(i).x + Object(i).w > Object(j).x AND Object(i).x < Object(j).x + Object(j).w THEN
                                 Object(i).x = Object(j).x - Object(i).w - 1
                                 Object(i).xv = 0
-                                IF Object(j).kind = objEnemy AND Object(j).taken = false THEN Dead = true: Object(j).taken = true
+                                IF Object(i).kind = objHero AND Object(j).kind = objEnemy AND Object(j).taken = false THEN Dead = true: Object(j).taken = true
                                 EXIT FOR
                             END IF
                         END IF
@@ -227,6 +178,7 @@ SUB DoPhysics
                             IF Object(i).x + Object(i).w > Object(j).x AND Object(i).x < Object(j).x + Object(j).w THEN
                                 Object(i).x = Object(j).x + Object(j).w + 1
                                 Object(i).xv = 0
+                                IF Object(i).kind = objHero AND Object(j).kind = objEnemy AND Object(j).taken = false THEN Dead = true: Object(j).taken = true
                                 EXIT FOR
                             END IF
                         END IF
@@ -325,5 +277,64 @@ SUB UpdateScreen
     IF Points > 0 THEN _PRINTSTRING (0, 0), STR$(Points)
 
     _DISPLAY
+END SUB
+
+SUB SetLevel (__Level AS INTEGER)
+    DIM Level AS INTEGER, MaxLevels AS INTEGER
+
+    MaxLevels = 1
+
+    IF __Level > MaxLevels THEN
+        Level = _CEIL(RND * MaxLevels)
+    ELSE
+        Level = __Level
+    END IF
+
+    SELECT CASE Level
+        CASE 1
+            NewObj = AddObject(objBackground, 0, 0, _WIDTH * 2, _HEIGHT, _RGB32(61, 161, 222))
+
+            FOR i = 1 TO 10
+                NewObj = AddObject(objBackground, RND * _WIDTH * 2, RND * -_HEIGHT, 50, 100, _RGB32(255, 255, 255))
+                Object(NewObj).shape = objShapeRound
+            NEXT
+
+            NewObj = AddObject(objFloor, 20, _HEIGHT - _HEIGHT / 5, _WIDTH * 1.5, 150, _RGB32(111, 89, 50))
+            NewObj = AddObject(objFloor, 1300, _HEIGHT - _HEIGHT / 5, _WIDTH * 1.5, 150, _RGB32(111, 89, 50))
+
+            NewObj = AddObject(objFloor, 110, 400, 110, 10, _RGB32(111, 89, 50))
+
+            NewObj = AddObject(objFloor, 400, 400, 110, 10, _RGB32(111, 89, 50))
+            NewObj = AddObject(objFloor, 575, 330, 110, 10, _RGB32(111, 89, 50))
+            NewObj = AddObject(objFloor, 700, 260, 110, 10, _RGB32(111, 89, 50))
+            NewObj = AddObject(objFloor, 875, 200, 110, 10, _RGB32(111, 89, 50))
+            NewObj = AddObject(objFloor, 1000, 140, 110, 10, _RGB32(111, 89, 50))
+            NewObj = AddObject(objFloor, 1175, 70, 110, 10, _RGB32(111, 89, 50))
+            NewObj = AddObject(objFloor, 1000, 10, 110, 10, _RGB32(111, 89, 50))
+            NewObj = AddObject(objFloor, 875, -50, 110, 10, _RGB32(111, 89, 50))
+            NewObj = AddObject(objFloor, 700, -110, 110, 10, _RGB32(111, 89, 50))
+
+            NewObj = AddObject(objBlock, 20, 400, 25, 25, _RGB32(216, 166, 50))
+
+            NewObj = AddObject(objBlock, 200, _HEIGHT - _HEIGHT / 5 - 16, 15, 15, _RGB32(216, 166, 50))
+            NewObj = AddObject(objBlock, 216, _HEIGHT - _HEIGHT / 5 - 16, 15, 15, _RGB32(216, 166, 50))
+            NewObj = AddObject(objBlock, 232, _HEIGHT - _HEIGHT / 5 - 16, 15, 15, _RGB32(216, 166, 50))
+            NewObj = AddObject(objBlock, 216, _HEIGHT - _HEIGHT / 5 - 32, 15, 15, _RGB32(216, 166, 50))
+            NewObj = AddObject(objBlock, 232, _HEIGHT - _HEIGHT / 5 - 32, 15, 15, _RGB32(216, 166, 50))
+            NewObj = AddObject(objBlock, 232, _HEIGHT - _HEIGHT / 5 - 48, 15, 15, _RGB32(216, 166, 50))
+
+            NewObj = AddObject(objBonus, 800, 270, 15, 10, _RGB32(249, 244, 55))
+            Object(NewObj).shape = objShapeRound
+
+            NewObj = AddObject(objBonus, 820, 320, 15, 10, _RGB32(249, 244, 55))
+            Object(NewObj).shape = objShapeRound
+
+            NewObj = AddObject(objBonus, 1200, _HEIGHT - _HEIGHT / 5 - 22, 15, 10, _RGB32(249, 244, 55))
+            Object(NewObj).shape = objShapeRound
+
+            NewObj = AddObject(objEnemy, 1200, _HEIGHT - _HEIGHT / 5 - 22, 15, 10, _RGB32(150, 89, 238))
+
+            Hero = AddObject(objHero, 25, _HEIGHT - _HEIGHT / 5 - 22, 10, 20, _RGB32(127, 244, 127))
+    END SELECT
 END SUB
 
