@@ -109,6 +109,10 @@ NEXT
 
 'DRAW decoration
 goalGlyph = "C" + STR$(_RGB32(255, 255, 255)) + "e10f10g10 h8e8f6g6 h4 e4f2g1"
+goal.x = arenaWidth
+goal.y = _HEIGHT / 2
+goal.h = 20
+goal.w = 20
 
 DIM c$
 c$ = STR$(_RGB32(166, 111, 67))
@@ -133,7 +137,7 @@ hero.alive = true
 hero.standing = true
 
 DIM checkLayers AS _BYTE
-IF _AUTODISPLAY THEN checkLayers = true
+'IF _AUTODISPLAY THEN checkLayers = true
 DO
     IF checkLayers THEN PRINT "Hit shift to view layers...": SLEEP
     drawSky
@@ -153,7 +157,6 @@ DO
     IF NOT drowned THEN drawHero
     IF checkLayers THEN SLEEP
     drawGoal
-    IF checkLayers THEN SLEEP
     checkLayers = false
 
     _DISPLAY
@@ -296,8 +299,14 @@ SUB doPhysics
         hero.color = _RGB32(200, 200, 200)
     END IF
 
+    IF hit(hero, goal) THEN _AUTODISPLAY: CLS: PRINT "win": hero.alive = false: SLEEP
+
     IF shadowCast = false THEN LINE ((hero.x - 3) + camera, _HEIGHT - _HEIGHT / 4 + _HEIGHT / 22)-STEP(hero.w + 6, 2), _RGBA32(0, 0, 0, 30), BF
 END SUB
+
+FUNCTION hit%% (obj1 AS newObject, obj2 AS newObject)
+    hit%% = obj1.x + obj1.w > obj2.x AND obj1.x <= obj2.x + obj2.w AND obj1.y + obj1.h > obj2.y AND obj1.y < obj2.y + obj2.h
+END FUNCTION
 
 SUB doClouds
     FOR i = 1 TO UBOUND(cloud)
@@ -317,8 +326,6 @@ SUB drawScene
 END SUB
 
 SUB drawGoal
-    goal.x = hero.x + 15
-    goal.y = _HEIGHT / 3
-    DRAW "bm" + STR$(goal.x + camera) + "," + STR$(goal.y)
+    DRAW "bm" + STR$(goal.x + camera) + "," + STR$(goal.y + goal.h / 2)
     DRAW goalGlyph
 END SUB
