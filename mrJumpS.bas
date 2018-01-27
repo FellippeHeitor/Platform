@@ -42,11 +42,13 @@ DIM SHARED level(levels) AS newLevel
 DIM SHARED symbol(levels) AS STRING
 DIM SHARED obj(100) AS newObject
 DIM SHARED hero AS newObject
+DIM SHARED goal AS newObject
 DIM SHARED cloud(10) AS newObject
 DIM SHARED sceneCloser(10) AS newObject
 DIM SHARED sceneFarther(10) AS newObject
 DIM SHARED camera AS SINGLE
 DIM SHARED gravity AS SINGLE
+DIM SHARED goalGlyph AS STRING
 
 arenaWidth = 3200
 gravity = .8
@@ -72,7 +74,7 @@ IF sceneFarther(1).img = 0 THEN
 END IF
 FOR i = 1 TO UBOUND(sceneFarther)
     sceneFarther(i).x = RND * arenaWidth
-    sceneFarther(i).y = RND * _HEIGHT
+    sceneFarther(i).y = RND * (_HEIGHT / 2)
 NEXT
 
 IF sceneCloser(1).img = 0 THEN
@@ -105,9 +107,10 @@ FOR i = 2 TO totalObjects
     IF obj(i).img < -1 THEN _FREEIMAGE obj(i).img: obj(i).img = 0
 NEXT
 
-DIM c$
-
 'DRAW decoration
+goalGlyph = "C" + STR$(_RGB32(255, 255, 255)) + "e10f10g10 h8e8f6g6 h4 e4f2g1"
+
+DIM c$
 c$ = STR$(_RGB32(166, 111, 67))
 symbol(1) = "c" + c$ + " bd5 e10r1g10r1e10r1g10r1e10r1g10r1e10r1g10"
 level(1).symbolSpacingX = 11
@@ -130,7 +133,7 @@ hero.alive = true
 hero.standing = true
 
 DIM checkLayers AS _BYTE
-checkLayers = false
+IF _AUTODISPLAY THEN checkLayers = true
 DO
     IF checkLayers THEN PRINT "Hit shift to view layers...": SLEEP
     drawSky
@@ -148,6 +151,8 @@ DO
     adjustCamera
     doPhysics
     IF NOT drowned THEN drawHero
+    IF checkLayers THEN SLEEP
+    drawGoal
     IF checkLayers THEN SLEEP
     checkLayers = false
 
@@ -219,7 +224,7 @@ SUB processInput
     STATIC lastJump!, jumpKeyDown AS _BYTE
     CONST jumpFactor = 3
 
-    IF _KEYDOWN(18432) THEN
+    IF _KEYDOWN(32) THEN '18432
         IF jumpKeyDown = false AND hero.standing = true THEN
             jumpKeyDown = true
             hero.standing = false
@@ -258,6 +263,28 @@ SUB doPhysics
 
     CONST gravityCap = 15
 
+    hero.standing = false
+    drowned = false
+    IF hero.y + hero.yv + gravity > _HEIGHT - _HEIGHT / 4 + _HEIGHT / 22 THEN drowned = true: hero.alive = false: EXIT SUB
+
+    FOR j = 1 TO totalObjects
+        IF hero.x + hero.w > obj(j).x AND hero.x < obj(j).x + obj(j).w THEN
+            shadowCast = true
+            LINE ((hero.x - 3) + camera, obj(j).y + 5)-STEP(hero.w + 6, 2), _RGBA32(0, 0, 0, 30), BF
+
+            IF hero.y + hero.yv + gravity < obj(j).y - (hero.h - 5) THEN
+                EXIT FOR
+            ELSEIF hero.y + hero.yv + gravity <= obj(j).y - (hero.h - 20) THEN
+                hero.standing = true
+                hero.y = obj(j).y - (hero.h - 5)
+                EXIT FOR
+            ELSEIF hero.y >= obj(j).y - (hero.h - 20) THEN
+                hero.alive = false
+                EXIT FOR
+            END IF
+        END IF
+    NEXT
+
     IF NOT hero.standing THEN
         hero.yv = hero.yv + gravity
         IF hero.yv > gravityCap THEN hero.yv = gravityCap
@@ -269,26 +296,6 @@ SUB doPhysics
         hero.color = _RGB32(200, 200, 200)
     END IF
 
-    hero.standing = false
-    drowned = false
-    IF hero.y > _HEIGHT - _HEIGHT / 4 + _HEIGHT / 22 THEN drowned = true: hero.alive = false: EXIT SUB
-
-    FOR j = 1 TO totalObjects
-        IF hero.x + hero.w > obj(j).x AND hero.x < obj(j).x + obj(j).w THEN
-            shadowCast = true
-            LINE ((hero.x - 3) + camera, obj(j).y + 5)-STEP(hero.w + 6, 2), _RGBA32(0, 0, 0, 30), BF
-            IF hero.y < obj(j).y - (hero.h - 5) THEN
-                EXIT FOR
-            ELSEIF hero.y <= obj(j).y - (hero.h - 20) THEN
-                hero.standing = true
-                hero.y = obj(j).y - (hero.h - 5)
-                EXIT FOR
-            ELSEIF hero.y >= obj(j).y - (hero.h - 20) THEN
-                hero.alive = false
-                EXIT FOR
-            END IF
-        END IF
-    NEXT
     IF shadowCast = false THEN LINE ((hero.x - 3) + camera, _HEIGHT - _HEIGHT / 4 + _HEIGHT / 22)-STEP(hero.w + 6, 2), _RGBA32(0, 0, 0, 30), BF
 END SUB
 
@@ -307,4 +314,11 @@ SUB drawScene
     FOR i = 1 TO UBOUND(sceneCloser)
         _PUTIMAGE (sceneCloser(i).x + camera / 2, sceneCloser(i).y), sceneCloser(1).img
     NEXT
+END SUB
+
+SUB drawGoal
+    goal.x = hero.x + 15
+    goal.y = _HEIGHT / 3
+    DRAW "bm" + STR$(goal.x + camera) + "," + STR$(goal.y)
+    DRAW goalGlyph
 END SUB
