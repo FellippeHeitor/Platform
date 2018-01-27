@@ -299,7 +299,7 @@ SUB doPhysics
         hero.color = _RGB32(200, 200, 200)
     END IF
 
-    IF hit(hero, goal) THEN _AUTODISPLAY: CLS: PRINT "win": hero.alive = false: SLEEP
+    IF hit(hero, goal) THEN _AUTODISPLAY: _PRINTSTRING (_WIDTH / 2 - _PRINTWIDTH("Level complete!") / 2, _HEIGHT / 2 - _FONTHEIGHT / 2), "Level complete!": hero.alive = false: SLEEP
 
     IF shadowCast = false THEN LINE ((hero.x - 3) + camera, _HEIGHT - _HEIGHT / 4 + _HEIGHT / 22)-STEP(hero.w + 6, 2), _RGBA32(0, 0, 0, 30), BF
 END SUB
