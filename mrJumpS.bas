@@ -205,6 +205,7 @@ SUB drawPlatforms
 END SUB
 
 SUB processInput
+    DIM button AS _BYTE
 
     IF _KEYHIT = 27 THEN
         hero.alive = true
@@ -227,7 +228,10 @@ SUB processInput
     STATIC lastJump!, jumpKeyDown AS _BYTE
     CONST jumpFactor = 3
 
-    IF _KEYDOWN(32) THEN '18432
+    WHILE _MOUSEINPUT: WEND
+    button = _MOUSEBUTTON(1) OR _KEYDOWN(32)
+
+    IF button THEN '18432
         IF jumpKeyDown = false AND hero.standing = true THEN
             jumpKeyDown = true
             hero.standing = false
