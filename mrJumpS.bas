@@ -1,243 +1,249 @@
-OPTION _EXPLICIT
+Option _Explicit
 
-CONST false = 0, true = NOT false
+$If VERSION < 1.5 Then
+    $Error This program requires QB64 v1.5
+$End If
 
-SCREEN _NEWIMAGE(800, 450, 32)
+Const false = 0, true = Not false
 
-TYPE newLevel
-    landColor AS _UNSIGNED LONG
-    grassColor AS _UNSIGNED LONG
-    waterColor AS _UNSIGNED LONG
-    symbolSpacingX AS LONG
-    symbolSpacingY AS LONG
-END TYPE
+Screen _NewImage(800, 450, 32)
 
-TYPE newObject
-    id AS LONG
-    x AS SINGLE
-    xv AS SINGLE
-    y AS SINGLE
-    yv AS SINGLE
-    w AS LONG
-    h AS LONG
-    img AS LONG
-    imgPointer AS _BYTE
-    color AS _UNSIGNED LONG
-    standing AS _BYTE
-    alive AS _BYTE
-END TYPE
+Type newLevel
+    As _Unsigned Long landColor, grassColor, waterColor
+    As Long symbolSpacingX, symbolSpacingY
+End Type
 
-CONST idPlatform = 1
-CONST idGoal = 2
-CONST idAirJump = 3
-CONST idInfiniteJumps = 4
-CONST idSpike = 5
-CONST idCloud = 6
-CONST idScene = 7
-CONST idSky = 8
-CONST idWater = 9
+Type object
+    As Long id, w, h, img
+    As Single x, xv, y, yv
+    As _Byte imgPointer, standing, alive
+    As _Unsigned Long color
+End Type
 
-DIM SHARED thisLevel AS LONG
-DIM SHARED arenaWidth AS LONG, i AS LONG
-DIM SHARED x AS SINGLE, y AS SINGLE
-DIM SHARED totalObjects AS LONG
-DIM SHARED drowned AS _BYTE
-DIM SHARED restartRequested AS _BYTE
-DIM SHARED levelData AS newLevel
-DIM SHARED platformDecoration AS STRING
-DIM SHARED obj(100) AS newObject
-DIM SHARED hero AS LONG
-DIM SHARED goal AS LONG
-DIM SHARED camera AS SINGLE
-DIM SHARED gravity AS SINGLE
-DIM SHARED goalGlyph AS STRING, airJumpGlyph AS STRING
-DIM SHARED airJumps AS LONG
+Const idPlatform = 1
+Const idGoal = 2
+Const idAirJump = 3
+Const idInfiniteJumps = 4
+Const idSpike = 5
+Const idCloud = 6
+Const idScene = 7
+Const idSky = 8
+Const idWater = 9
 
-RANDOMIZE TIMER
+Dim Shared As Long thisLevel, arenaWidth, i, totalObjects, airJumps, hero, goal
+Dim Shared As Single x, y, camera, gravity
+Dim Shared As _Byte drowned, restartRequested, shadowCast
+Dim Shared As String platformDecoration, goalGlyph, airJumpGlyph
+Dim Shared As newLevel levelData
+Dim Shared As object obj(100), shadowCastOn
 
-goalGlyph = "C" + STR$(_RGB32(255, 255, 255)) + "e10f10g10 h8e8f6g6 h4 e4f2g1"
-airJumpGlyph = "C" + STR$(_RGB32(255, 255, 255)) + "e10f10g10h10"
+Randomize Timer
+
+goalGlyph = "C" + Str$(_RGB32(255, 255, 255)) + "e10f10g10 h8e8f6g6 h4 e4f2g1"
+airJumpGlyph = "C" + Str$(_RGB32(255, 255, 255)) + "e10f10g10h10"
 gravity = .8
 thisLevel = 1
 
 Restart:
 setLevel thisLevel
 
-DO
+Do
     processInput
     doPhysics
     adjustCamera
     drawObjects
-    IF restartRequested THEN restartRequested = false: GOTO Restart
-    IF NOT drowned THEN drawHero
+    If restartRequested Then restartRequested = false: GoTo Restart
+    If Not drowned Then drawHero
+    checkVictory
 
-    _DISPLAY
-    _LIMIT 60
-LOOP
+    If Not obj(hero).alive Then
+        _PrintString (0, 0), "Dead"
+        _PrintString (0, 20), Str$((obj(hero).x / arenaWidth) * 100) + "%"
+    ElseIf obj(hero).standing Then
+        _PrintString (0, 0), "Standing"
+    End If
 
-SUB addWater
-    DIM this AS LONG
+    _Display
+    _Limit 60
+Loop
+
+Sub addWater
+    Dim this As Long
     this = newObject
     obj(this).id = idWater
-    obj(this).img = _NEWIMAGE(_WIDTH, _HEIGHT, 32)
-    _DEST obj(this).img
-    LINE (0, _HEIGHT - _HEIGHT / 4)-STEP(_WIDTH, _HEIGHT / 4), darken(levelData.waterColor, 55), BF
-    LINE (0, _HEIGHT - _HEIGHT / 4)-STEP(_WIDTH, _HEIGHT / 7), darken(levelData.waterColor, 70), BF
-    LINE (0, _HEIGHT - _HEIGHT / 4)-STEP(_WIDTH, _HEIGHT / 9), darken(levelData.waterColor, 85), BF
-    LINE (0, _HEIGHT - _HEIGHT / 4)-STEP(_WIDTH, _HEIGHT / 11), levelData.waterColor, BF
-    _DEST 0
-END SUB
+    obj(this).img = _NewImage(_Width, _Height, 32)
+    _Dest obj(this).img
+    Line (0, _Height - _Height / 4)-Step(_Width, _Height / 4), darken(levelData.waterColor, 55), BF
+    Line (0, _Height - _Height / 4)-Step(_Width, _Height / 7), darken(levelData.waterColor, 70), BF
+    Line (0, _Height - _Height / 4)-Step(_Width, _Height / 9), darken(levelData.waterColor, 85), BF
+    Line (0, _Height - _Height / 4)-Step(_Width, _Height / 11), levelData.waterColor, BF
+    _Dest 0
+End Sub
 
-SUB drawObjects
-    FOR i = 1 TO totalObjects
-        SELECT CASE obj(i).id
-            CASE idPlatform
-                _PUTIMAGE (obj(i).x + camera, obj(i).y), obj(i).img
-            CASE idGoal
-                DRAW "bm" + STR$(obj(goal).x + camera) + "," + STR$(obj(goal).y + obj(goal).h / 2)
-                DRAW goalGlyph
-            CASE idAirJump
-                DRAW "bm" + STR$(obj(i).x + camera) + "," + STR$(obj(i).y + obj(i).h / 2)
-                DRAW airJumpGlyph
-            CASE idCloud
+Sub drawObjects
+    For i = 1 To totalObjects
+        Select Case obj(i).id
+            Case idPlatform
+                _PutImage (obj(i).x + camera, obj(i).y), obj(i).img
+            Case idGoal
+                Draw "bm" + Str$(obj(goal).x + camera) + "," + Str$(obj(goal).y + obj(goal).h / 2)
+                Draw goalGlyph
+            Case idAirJump
+                Draw "bm" + Str$(obj(i).x + camera) + "," + Str$(obj(i).y + obj(i).h / 2)
+                Draw airJumpGlyph
+            Case idCloud
                 obj(i).x = obj(i).x - obj(i).xv
-                IF obj(i).x + obj(i).w < 0 THEN obj(i).x = arenaWidth
-                LINE (obj(i).x + camera / 2.5, obj(i).y)-STEP(obj(i).w, obj(i).h), _RGBA32(255, 255, 255, 30), BF
-            CASE idScene
-                _PUTIMAGE (obj(i).x + camera / obj(i).xv, obj(i).y), obj(i).img
-            CASE idSky
-                LINE (0, 0)-(_WIDTH, _HEIGHT), obj(i).color, BF
-            CASE idWater
-                _PUTIMAGE , obj(i).img
-        END SELECT
-    NEXT
-END SUB
+                If obj(i).x + obj(i).w < 0 Then obj(i).x = arenaWidth
+                Line (obj(i).x + camera / 2.5, obj(i).y)-Step(obj(i).w, obj(i).h), _RGBA32(255, 255, 255, 30), BF
+            Case idScene
+                _PutImage (obj(i).x + camera / obj(i).xv, obj(i).y), obj(i).img
+            Case idSky
+                Line (0, 0)-(_Width, _Height), obj(i).color, BF
+            Case idWater
+                _PutImage , obj(i).img
+        End Select
+    Next
+End Sub
 
-SUB processInput
-    DIM button AS _BYTE
+Sub processInput
+    Dim button As _Byte
 
-    IF _KEYHIT = 27 THEN
+    If _KeyHit = 27 Then
         obj(hero).alive = true
         obj(hero).yv = 0
         restartRequested = true
-        EXIT SUB
-    END IF
+        Exit Sub
+    End If
 
-    IF obj(hero).alive = false THEN EXIT SUB
-    IF obj(hero).x + obj(hero).w < arenaWidth + _WIDTH THEN obj(hero).x = obj(hero).x + 5
+    If obj(hero).alive = false Then Exit Sub
 
-    'IF _KEYDOWN(19712) THEN 'character goes left, screen goes right
+    'keep hero moving forward
+    If obj(hero).x + obj(hero).w < arenaWidth + _Width Then obj(hero).x = obj(hero).x + 5
+
+    'If _KeyDown(19712) Then 'character goes left, screen goes right
     '    obj(hero).x = obj(hero).x + 5
-    'END IF
+    'End If
 
-    'IF _KEYDOWN(19200) THEN 'character goes right, screen goes left
+    'If _KeyDown(19200) Then 'character goes right, screen goes left
     '    obj(hero).x = obj(hero).x - 5
-    'END IF
+    'End If
 
-    STATIC lastJump!, jumpKeyDown AS _BYTE
-    CONST jumpFactor = 3
+    Static lastJump!, jumpKeyDown As _Byte
+    Const jumpFactor = 3
 
-    WHILE _MOUSEINPUT: WEND
-    button = _MOUSEBUTTON(1) OR _KEYDOWN(32)
+    While _MouseInput: Wend
+    button = _MouseButton(1) Or _KeyDown(32)
 
-    IF button THEN '18432
-        IF jumpKeyDown = false AND (obj(hero).standing = true OR airJumps > 0) THEN
-            IF airJumps > 0 THEN airJumps = airJumps - 1
+    If button Then '18432
+        If jumpKeyDown = false And (obj(hero).standing = true Or airJumps > 0) Then
+            If airJumps > 0 Then airJumps = airJumps - 1
             jumpKeyDown = true
             obj(hero).standing = false
             lastJump! = 0
             obj(hero).yv = obj(hero).yv - gravity * jumpFactor
-        ELSE
+        Else
             lastJump! = lastJump! + 1
-            IF lastJump! < 7 THEN
+            If lastJump! < 7 Then
                 obj(hero).yv = obj(hero).yv - gravity * jumpFactor
-            END IF
-        END IF
-    ELSE
+            End If
+        End If
+    Else
         jumpKeyDown = false
-    END IF
-END SUB
+    End If
+End Sub
 
-SUB adjustCamera
-    camera = _WIDTH / 4 - obj(hero).x
-    IF camera > 0 THEN camera = 0
-    IF camera < -arenaWidth THEN camera = -arenaWidth
-END SUB
+Sub adjustCamera
+    camera = _Width / 4 - obj(hero).x
+    If camera > 0 Then camera = 0
+    If camera < -arenaWidth Then camera = -arenaWidth
+End Sub
 
-SUB drawHero
-    LINE (obj(hero).x + camera, obj(hero).y)-STEP(obj(hero).w, obj(hero).h), obj(hero).color, BF
-END SUB
+Sub drawHero
+    Dim shadow As object
+    Line (obj(hero).x + camera, obj(hero).y)-Step(obj(hero).w, obj(hero).h), obj(hero).color, BF
 
-SUB doPhysics
-    DIM this AS newObject
-    DIM j AS LONG, shadowCast AS _BYTE
+    If obj(hero).alive Then
+        If shadowCast Then
+            'shadow already cast on a platform
+            shadow.x = (obj(hero).x + 1) + camera
+            shadow.y = shadowCastOn.y + 5
+            shadow.w = obj(hero).w - 2
+            Do While shadow.x < shadowCastOn.x + camera
+                shadow.x = shadow.x + 1
+                shadow.w = shadow.w - 1
+            Loop
+            Do While shadow.x + shadow.w > shadowCastOn.x + shadowCastOn.w + camera
+                shadow.w = shadow.w - 1
+            Loop
+            Line (shadow.x, shadow.y)-Step(shadow.w, 2), _RGBA32(0, 0, 0, 30), BF
+        Else
+            'cast shadow on water
+            Line ((obj(hero).x + 1) + camera, _Height - _Height / 4 + _Height / 22)-Step(obj(hero).w - 2, 2), _RGBA32(0, 0, 0, 30), BF
+        End If
+    End If
+End Sub
 
-    IF NOT obj(hero).alive THEN
-        _PRINTSTRING (0, 0), "Dead"
-        _PRINTSTRING (0, 20), STR$((obj(hero).x / arenaWidth) * 100) + "%"
-        EXIT SUB
-    END IF
+Sub doPhysics
+    Dim j As Long
 
-    CONST gravityCap = 15
+    If Not obj(hero).alive Then Exit Sub
+
+    Const gravityCap = 15
 
     obj(hero).standing = false
     drowned = false
-    IF obj(hero).y + obj(hero).yv + gravity > _HEIGHT - _HEIGHT / 4 + _HEIGHT / 22 THEN drowned = true: obj(hero).alive = false: EXIT SUB
+    If obj(hero).y + obj(hero).yv + gravity > _Height - _Height / 4 + _Height / 22 Then drowned = true: obj(hero).alive = false: Exit Sub
 
-    FOR j = 1 TO totalObjects
-        IF obj(j).id = idPlatform THEN
-            IF obj(hero).x + obj(hero).w > obj(j).x AND obj(hero).x < obj(j).x + obj(j).w THEN
+    shadowCast = false
+    For j = 1 To totalObjects
+        If obj(j).id = idPlatform Then
+            If obj(hero).x + obj(hero).w > obj(j).x And obj(hero).x < obj(j).x + obj(j).w Then
                 shadowCast = true
-                LINE ((obj(hero).x - 3) + camera, obj(j).y + 5)-STEP(obj(hero).w + 6, 2), _RGBA32(0, 0, 0, 30), BF
+                shadowCastOn = obj(j)
 
-                IF obj(hero).y + obj(hero).yv + gravity < obj(j).y - (obj(hero).h - 5) THEN
-                    EXIT FOR
-                ELSEIF obj(hero).y + obj(hero).yv + gravity <= obj(j).y - (obj(hero).h - 20) THEN
+                If obj(hero).y + obj(hero).yv + gravity < obj(j).y - (obj(hero).h - 5) Then
+                    Exit For
+                ElseIf obj(hero).y + obj(hero).yv + gravity <= obj(j).y - (obj(hero).h - 20) Then
                     obj(hero).standing = true
                     obj(hero).y = obj(j).y - (obj(hero).h - 5)
-                    EXIT FOR
-                ELSEIF obj(hero).y >= obj(j).y - (obj(hero).h - 20) THEN
+                    Exit For
+                ElseIf obj(hero).y >= obj(j).y - (obj(hero).h - 20) Then
                     obj(hero).alive = false
-                    EXIT FOR
-                END IF
-            END IF
-        END IF
-    NEXT
+                    Exit For
+                End If
+            End If
+        End If
+    Next
 
-    IF NOT obj(hero).standing THEN
+    If Not obj(hero).standing Then
         obj(hero).yv = obj(hero).yv + gravity
-        IF obj(hero).yv > gravityCap THEN obj(hero).yv = gravityCap
+        If obj(hero).yv > gravityCap Then obj(hero).yv = gravityCap
         obj(hero).y = obj(hero).y + obj(hero).yv
         obj(hero).color = _RGB32(255, 255, 255)
-    ELSE
-        _PRINTSTRING (0, 0), "Standing"
+    Else
         obj(hero).yv = 0
         obj(hero).color = _RGB32(200, 200, 200)
-    END IF
+    End If
+End Sub
 
-    IF hit(obj(hero), obj(goal)) THEN _AUTODISPLAY: _PRINTSTRING (_WIDTH / 2 - _PRINTWIDTH("Level complete!") / 2, _HEIGHT / 2 - _FONTHEIGHT / 2), "Level complete!": obj(hero).alive = false: SLEEP
+Function hit%% (obj1 As object, obj2 As object)
+    hit%% = obj1.x + obj1.w > obj2.x And obj1.x <= obj2.x + obj2.w And obj1.y + obj1.h > obj2.y And obj1.y < obj2.y + obj2.h
+End Function
 
-    IF shadowCast = false THEN LINE ((obj(hero).x - 3) + camera, _HEIGHT - _HEIGHT / 4 + _HEIGHT / 22)-STEP(obj(hero).w + 6, 2), _RGBA32(0, 0, 0, 30), BF
-END SUB
-
-FUNCTION hit%% (obj1 AS newObject, obj2 AS newObject)
-    hit%% = obj1.x + obj1.w > obj2.x AND obj1.x <= obj2.x + obj2.w AND obj1.y + obj1.h > obj2.y AND obj1.y < obj2.y + obj2.h
-END FUNCTION
-
-FUNCTION darken~& (WhichColor~&, ByHowMuch%)
-    darken~& = _RGB32(_RED32(WhichColor~&) * (ByHowMuch% / 100), _GREEN32(WhichColor~&) * (ByHowMuch% / 100), _BLUE32(WhichColor~&) * (ByHowMuch% / 100))
-END FUNCTION
+Function darken~& (WhichColor~&, ByHowMuch%)
+    darken~& = _RGB32(_Red32(WhichColor~&) * (ByHowMuch% / 100), _Green32(WhichColor~&) * (ByHowMuch% / 100), _Blue32(WhichColor~&) * (ByHowMuch% / 100))
+End Function
 
 
-SUB setLevel (level AS LONG)
+Sub setLevel (level As Long)
     'the order of creation of objects is also the draw order
 
-    DIM totalPlatforms AS LONG
-    DIM this AS LONG, firstPlatform AS LONG
+    Dim totalPlatforms As Long
+    Dim this As Long, firstPlatform As Long
 
     resetObjects
-    SELECT CASE level
-        CASE 1
+    Select Case level
+        Case 1
             arenaWidth = 3200
             totalPlatforms = 30
             levelData.landColor = _RGB32(194, 127, 67)
@@ -254,30 +260,30 @@ SUB setLevel (level AS LONG)
 
             addClouds 5
 
-            platformDecoration = "c" + STR$(_RGB32(166, 111, 67)) + " bd5 e10r1g10r1e10r1g10r1e10r1g10r1e10r1g10"
+            platformDecoration = "c" + Str$(_RGB32(166, 111, 67)) + " bd5 e10r1g10r1e10r1g10r1e10r1g10r1e10r1g10"
             levelData.symbolSpacingX = 11
             levelData.symbolSpacingY = 11
-            FOR i = 1 TO totalPlatforms
+            For i = 1 To totalPlatforms
                 this = newObject
                 obj(this).id = idPlatform
-                obj(this).w = RND * 200 + 50
-                obj(this).w = obj(this).w - (obj(this).w MOD 20)
-                IF i = 1 THEN
+                obj(this).w = Rnd * 200 + 100
+                obj(this).w = obj(this).w - (obj(this).w Mod 20)
+                If i = 1 Then
                     firstPlatform = this
                     obj(this).h = 200
-                    obj(this).x = RND * (arenaWidth / totalPlatforms)
-                ELSE
-                    obj(this).h = RND * 50 + 50
-                    obj(this).x = obj(this - 1).x + obj(this - 1).w + (RND * (arenaWidth / (totalPlatforms * 1.5)))
-                END IF
-                obj(this).y = (_HEIGHT - _HEIGHT / 4 + (_HEIGHT / 20)) - obj(this).h
+                    obj(this).x = Rnd * (arenaWidth / totalPlatforms)
+                Else
+                    obj(this).h = Rnd * 50 + 50
+                    obj(this).x = obj(this - 1).x + obj(this - 1).w + (Rnd * (arenaWidth / (totalPlatforms * 1.5)))
+                End If
+                obj(this).y = (_Height - _Height / 4 + (_Height / 20)) - obj(this).h
                 drawPlatform obj(this)
-            NEXT
+            Next
 
             goal = newObject
             obj(goal).id = idGoal
             obj(goal).x = arenaWidth
-            obj(goal).y = _HEIGHT / 2
+            obj(goal).y = _Height / 2
             obj(goal).h = 20
             obj(goal).w = 20
 
@@ -288,116 +294,120 @@ SUB setLevel (level AS LONG)
             obj(hero).h = 30
             obj(hero).alive = true
             obj(hero).standing = true
-    END SELECT
-END SUB
+    End Select
+End Sub
 
-FUNCTION newObject&
+Function newObject&
     totalObjects = totalObjects + 1
-    IF totalObjects > UBOUND(obj) THEN
-        REDIM _PRESERVE obj(totalObjects + 99) AS newObject
-    END IF
+    If totalObjects > UBound(obj) Then
+        ReDim _Preserve obj(totalObjects + 99) As object
+    End If
     newObject& = totalObjects
-END FUNCTION
+End Function
 
-SUB resetObjects
-    DIM emptyObject AS newObject
-    FOR i = 1 TO UBOUND(obj)
-        IF obj(i).img < -1 AND obj(i).imgPointer = false THEN _FREEIMAGE obj(i).img
+Sub resetObjects
+    Dim emptyObject As object
+    For i = 1 To UBound(obj)
+        If obj(i).img < -1 And obj(i).imgPointer = false Then _FreeImage obj(i).img
         obj(i) = emptyObject
-    NEXT
+    Next
     totalObjects = 0
-END SUB
+End Sub
 
-SUB drawPlatform (this AS newObject)
-    this.img = _NEWIMAGE(this.w, this.h, 32)
-    _DEST this.img
-    LINE (0, 10)-STEP(this.w - 1, this.h - 1), levelData.landColor, BF
-    FOR x = -10 TO this.w STEP levelData.symbolSpacingX
-        FOR y = 15 TO this.h + 10 STEP levelData.symbolSpacingY
-            PSET (x, y), levelData.landColor
-            DRAW platformDecoration
-        NEXT
-    NEXT
-    LINE (0, 0)-STEP(this.w - 1, 20), levelData.grassColor, BF
-    LINE (0, 0)-STEP(this.w - 1, 10), _RGBA32(255, 255, 255, 30), BF
-    LINE (0, 10)-STEP(5, this.h), _RGBA32(255, 255, 255, 30), BF
-    LINE (this.w - 6, 10)-STEP(5, this.h), _RGBA32(0, 0, 0, 30), BF
+Sub drawPlatform (this As object)
+    this.img = _NewImage(this.w, this.h, 32)
+    _Dest this.img
+    Line (0, 10)-Step(this.w - 1, this.h - 1), levelData.landColor, BF
+    For x = -10 To this.w Step levelData.symbolSpacingX
+        For y = 15 To this.h + 10 Step levelData.symbolSpacingY
+            PSet (x, y), 0
+            Draw platformDecoration
+        Next
+    Next
+    Line (0, 0)-Step(this.w - 1, 20), levelData.grassColor, BF
+    Line (0, 0)-Step(this.w - 1, 10), _RGBA32(255, 255, 255, 30), BF
+    Line (0, 10)-Step(5, this.h), _RGBA32(255, 255, 255, 30), BF
+    Line (this.w - 6, 10)-Step(5, this.h), _RGBA32(0, 0, 0, 30), BF
 
-    LINE (0, 5)-(5, 0), _RGB32(255, 0, 255)
-    PAINT (0, 0), _RGB32(255, 0, 255), _RGB32(255, 0, 255)
-    LINE (_WIDTH - 1, 5)-(_WIDTH - 6, 0), _RGB32(255, 0, 255)
-    PAINT (_WIDTH - 1, 0), _RGB32(255, 0, 255), _RGB32(255, 0, 255)
-    LINE (0, this.h - 4)-STEP(this.w, 3), _RGB32(255, 0, 255), BF
-    _CLEARCOLOR _RGB32(255, 0, 255)
-    LINE (0, this.h - 5)-STEP(this.w - 1, 5), _RGBA32(0, 0, 0, 30), BF
-    _DEST 0
-END SUB
+    Line (0, 5)-(5, 0), _RGB32(255, 0, 255)
+    Paint (0, 0), _RGB32(255, 0, 255), _RGB32(255, 0, 255)
+    Line (_Width - 1, 5)-(_Width - 6, 0), _RGB32(255, 0, 255)
+    Paint (_Width - 1, 0), _RGB32(255, 0, 255), _RGB32(255, 0, 255)
+    Line (0, this.h - 4)-Step(this.w, 3), _RGB32(255, 0, 255), BF
+    _ClearColor _RGB32(255, 0, 255)
+    Line (0, this.h - 5)-Step(this.w - 1, 5), _RGBA32(0, 0, 0, 30), BF
+    _Dest 0
+End Sub
 
-SUB addClouds (max AS LONG)
-    DIM this AS LONG
+Sub addClouds (max As Long)
+    Dim this As Long
 
-    FOR i = 1 TO max
+    For i = 1 To max
         this = newObject
         obj(this).id = idCloud
-        obj(this).x = RND * arenaWidth
-        obj(this).y = RND * (_HEIGHT / 2)
+        obj(this).x = Rnd * arenaWidth
+        obj(this).y = Rnd * (_Height / 2)
         obj(this).h = 30
         obj(this).w = arenaWidth / max
-        obj(this).xv = RND
-    NEXT
-END SUB
+        obj(this).xv = Rnd
+    Next
+End Sub
 
-SUB addScene (level AS LONG)
-    DIM this AS LONG, firstItem AS LONG
+Sub addScene (level As Long)
+    Dim this As Long, firstItem As Long
 
-    SELECT CASE level
-        CASE 1
+    Select Case level
+        Case 1
             'green mountains, 2 layers
 
             'farther range
-            FOR i = 1 TO 20
+            For i = 1 To 20
                 this = newObject
-                IF i = 1 THEN
+                If i = 1 Then
                     firstItem = this
-                    obj(this).img = _NEWIMAGE(_WIDTH, _HEIGHT, 32)
-                    _DEST obj(this).img
-                    LINE (0, _HEIGHT - 1)-(_WIDTH / 2, 0), _RGB32(100, 150, 122)
-                    LINE -(_WIDTH - 1, _HEIGHT - 1), _RGB32(100, 150, 122)
-                    LINE -(0, _HEIGHT - 1), _RGB32(100, 150, 122)
-                    PAINT (_WIDTH / 2, _HEIGHT / 2), _RGB32(100, 150, 122), _RGB32(100, 150, 122)
-                    _DEST 0
-                ELSE
+                    obj(this).img = _NewImage(_Width, _Height, 32)
+                    _Dest obj(this).img
+                    Line (0, _Height - 1)-(_Width / 2, 0), _RGB32(100, 150, 122)
+                    Line -(_Width - 1, _Height - 1), _RGB32(100, 150, 122)
+                    Line -(0, _Height - 1), _RGB32(100, 150, 122)
+                    Paint (_Width / 2, _Height / 2), _RGB32(100, 150, 122), _RGB32(100, 150, 122)
+                    _Dest 0
+                Else
                     obj(this).img = obj(firstItem).img
                     obj(this).imgPointer = true
-                END IF
+                End If
 
                 obj(this).id = idScene
-                obj(this).x = RND * arenaWidth
-                obj(this).y = RND * (_HEIGHT / 2)
+                obj(this).x = Rnd * arenaWidth
+                obj(this).y = Rnd * (_Height / 2)
                 obj(this).xv = 2.5
-            NEXT
+            Next
 
             'closer range
-            FOR i = 1 TO 20
+            For i = 1 To 20
                 this = newObject
-                IF i = 1 THEN
+                If i = 1 Then
                     firstItem = this
-                    obj(this).img = _NEWIMAGE(_WIDTH, _HEIGHT, 32)
-                    _DEST obj(this).img
-                    LINE (0, _HEIGHT - 1)-(_WIDTH / 2, 0), _RGB32(78, 111, 67)
-                    LINE -(_WIDTH - 1, _HEIGHT - 1), _RGB32(78, 111, 67)
-                    LINE -(0, _HEIGHT - 1), _RGB32(78, 111, 67)
-                    PAINT (_WIDTH / 2, _HEIGHT / 2), _RGB32(78, 111, 67), _RGB32(78, 111, 67)
-                    _DEST 0
-                ELSE
+                    obj(this).img = _NewImage(_Width, _Height, 32)
+                    _Dest obj(this).img
+                    Line (0, _Height - 1)-(_Width / 2, 0), _RGB32(78, 111, 67)
+                    Line -(_Width - 1, _Height - 1), _RGB32(78, 111, 67)
+                    Line -(0, _Height - 1), _RGB32(78, 111, 67)
+                    Paint (_Width / 2, _Height / 2), _RGB32(78, 111, 67), _RGB32(78, 111, 67)
+                    _Dest 0
+                Else
                     obj(this).img = obj(firstItem).img
                     obj(this).imgPointer = true
-                END IF
+                End If
 
                 obj(this).id = idScene
-                obj(this).x = RND * arenaWidth
-                obj(this).y = RND * (_HEIGHT / 2)
+                obj(this).x = Rnd * arenaWidth
+                obj(this).y = Rnd * (_Height / 2)
                 obj(this).xv = 2
-            NEXT
-    END SELECT
-END SUB
+            Next
+    End Select
+End Sub
+
+Sub checkVictory
+    If hit(obj(hero), obj(goal)) Then _AutoDisplay: _PrintString (_Width / 2 - _PrintWidth("Level complete!") / 2, _Height / 2 - _FontHeight / 2), "Level complete!": restartRequested = true: Sleep
+End Sub
