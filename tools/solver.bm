@@ -1,0 +1,356 @@
+' Level checker, native QB64-PE only. levelcheck.bas includes the game with
+' HEADLESS = 1 and then this file; the game calls runLevelCheck before it
+' opens a window. Nothing here is seen by QBJS or by normal builds.
+'
+' For every level it searches all button sequences (held / not held each
+' tick) through the real simStep, merging near-identical states. A winning
+' path is replayed exactly from a fresh start to confirm it. It also reports
+' how far a player who never presses gets, and the narrowest point.
+
+Sub runLevelCheck
+    Const SOLVE_CAP = 4000
+    Const HASH_SIZE = 32768
+
+    headless = TRUE
+    Dim lv As Long, tick As Long, maxTicks As Long, i As Long, b As Long, j As Long
+    Dim nCur As Long, nNext As Long, solved As Long, winIdx As Long, failed As Long
+    Dim hv As Long, k1 As Long, k2 As Long, k3 As Long, k4 As Long, minW As Long, minWPct As Long, bestFailX As Single
+    Dim s As HeroState, idle As HeroState, replay As HeroState
+    Dim presses As Long, prevBit As Long, allOk As Long, pr As Long, thr As Long, kept As Long
+    Dim quota As Single, share As Single, bucket(0 To 15) As Long, gen As Long
+    Dim hK1(0 To HASH_SIZE - 1) As Long, hK2(0 To HASH_SIZE - 1) As Long
+    Dim hK3(0 To HASH_SIZE - 1) As Long, hK4(0 To HASH_SIZE - 1) As Long, hStamp(0 To HASH_SIZE - 1) As Long
+    ReDim cur(1 To SOLVE_CAP) As HeroState, nxt(1 To SOLVE_CAP * 2) As HeroState
+    ReDim curPar(1 To SOLVE_CAP) As Long, nxtPar(1 To SOLVE_CAP * 2) As Long
+    ReDim nxtBit(1 To SOLVE_CAP * 2) As Long
+    ReDim parentOf(0, 0) As Long, bitOf(0, 0) As _Byte, inputs(0) As _Byte
+
+    allOk = TRUE
+    Print "Level check:"; levelCount; "levels"
+    For lv = 1 To levelCount
+        loadLevel lv
+        maxTicks = (goalX - startX) / RUN_SPEED + 600
+        ReDim parentOf(1 To maxTicks, 1 To SOLVE_CAP) As Long
+        ReDim bitOf(1 To maxTicks, 1 To SOLVE_CAP) As _Byte
+
+        nCur = 1
+        initHero cur(1)
+        solved = FALSE: failed = FALSE: minW = SOLVE_CAP * 2: minWPct = 0
+        For tick = 1 To maxTicks
+            simTick = tick
+            nNext = 0
+            gen = gen + 1 ' hash stamp; never repeats, even across levels
+            For i = 1 To nCur
+                For b = 0 To 1
+                    s = cur(i)
+                    simStep s, -b
+                    If s.won Then solved = TRUE: winIdx = i: Exit For
+                    If s.alive Then
+                        ' state key: positions rounded so near-identical states merge
+                        k1 = Int(s.y + 1000) * 1024 + Int(s.yv * 5 + 512)
+                        k2 = Int(s.x)
+                        k3 = s.gemMask
+                        k4 = s.airJumps + s.mode * 64 + s.coyote * 256 + s.buffer * 4096 + (s.grounded And 1) * 65536 + (s.heldPrev And 1) * 131072 + (s.jumping And 1) * 262144 + (s.barriersOn And 1) * 524288
+                        hv = (k1 * 7919 + k2 * 13 + k3 * 17 + k4 * 31) And (HASH_SIZE - 1)
+                        Do
+                            If hStamp(hv) <> gen Then
+                                hStamp(hv) = gen: hK1(hv) = k1: hK2(hv) = k2: hK3(hv) = k3: hK4(hv) = k4
+                                nNext = nNext + 1
+                                nxt(nNext) = s: nxtPar(nNext) = i: nxtBit(nNext) = b
+                                Exit Do
+                            ElseIf hK1(hv) = k1 And hK2(hv) = k2 And hK3(hv) = k3 And hK4(hv) = k4 Then
+                                Exit Do
+                            End If
+                            hv = (hv + 1) And (HASH_SIZE - 1)
+                        Loop
+                    End If
+                Next
+                If solved Then Exit For
+            Next
+            If solved Then
+                parentOf(tick, 1) = winIdx: bitOf(tick, 1) = b
+                Exit For
+            End If
+            If nNext = 0 Then
+                failed = TRUE
+                bestFailX = 0
+                For i = 1 To nCur
+                    If cur(i).x > bestFailX Then bestFailX = cur(i).x: j = i
+                Next
+                Exit For
+            End If
+
+            If nNext < minW And tick > 30 Then
+                minW = nNext
+                minWPct = Int((nxt(1).x - startX) / (goalX - startX) * 100)
+            End If
+
+            ' Too many states: keep the most promising ones (spare air jumps,
+            ' then standing on ground) and an even spread of the rest.
+            If nNext > SOLVE_CAP Then
+                For i = 0 To 15: bucket(i) = 0: Next
+                For i = 1 To nNext
+                    pr = statePriority(nxt(i)): bucket(pr) = bucket(pr) + 1
+                Next
+                kept = 0
+                For thr = 15 To 0 Step -1
+                    If kept + bucket(thr) >= SOLVE_CAP Then Exit For
+                    kept = kept + bucket(thr)
+                Next
+                quota = SOLVE_CAP - kept
+                share = 0: nCur = 0
+                For i = 1 To nNext
+                    pr = statePriority(nxt(i))
+                    If pr > thr Then
+                        j = TRUE
+                    ElseIf pr = thr Then
+                        share = share + quota / bucket(thr)
+                        j = (share >= 1)
+                        If j Then share = share - 1
+                    Else
+                        j = FALSE
+                    End If
+                    If j And nCur < SOLVE_CAP Then
+                        nCur = nCur + 1
+                        cur(nCur) = nxt(i): curPar(nCur) = nxtPar(i)
+                        parentOf(tick, nCur) = nxtPar(i): bitOf(tick, nCur) = nxtBit(i)
+                    End If
+                Next
+            Else
+                For i = 1 To nNext
+                    cur(i) = nxt(i)
+                    parentOf(tick, i) = nxtPar(i): bitOf(tick, i) = nxtBit(i)
+                Next
+                nCur = nNext
+            End If
+        Next
+
+        Print
+        Print "Level"; lv; "- "; levelName; " ("; levelCols; "cols,"; Int((goalX - startX) / RUN_SPEED / 60 * 10) / 10; "s run)"
+        If solved Then
+            ' walk the parent links back to get the inputs, then replay them
+            ReDim inputs(1 To tick) As _Byte
+            j = 1
+            For i = tick To 1 Step -1
+                inputs(i) = bitOf(i, j)
+                j = parentOf(i, j)
+            Next
+            initHero replay
+            presses = 0: prevBit = 0
+            For i = 1 To tick
+                simTick = i
+                simStep replay, -inputs(i)
+                If inputs(i) And prevBit = 0 Then presses = presses + 1
+                prevBit = inputs(i)
+                If Not replay.alive Or replay.won Then Exit For
+            Next
+            If replay.won Then
+                Print "  BEATABLE: replay wins at tick"; i; "with"; presses; "presses"
+                timingReport inputs(), tick
+            Else
+                Print "  SEARCH WON BUT REPLAY FAILED at"; Int((replay.x - startX) / (goalX - startX) * 100); "% (merging too coarse)"
+                allOk = FALSE
+            End If
+        ElseIf failed Then
+            Print "  IMPOSSIBLE: every path dies by"; Int((bestFailX - startX) / (goalX - startX) * 100); "%  (x ="; Int(bestFailX); ", col"; Int(bestFailX / TILE); ")"
+            allOk = FALSE
+        Else
+            Print "  TIMED OUT without reaching the goal"
+            allOk = FALSE
+        End If
+
+        ' a player who never presses should not finish
+        initHero idle
+        For i = 1 To maxTicks
+            simTick = i
+            simStep idle, 0
+            If Not idle.alive Or idle.won Then Exit For
+        Next
+        If idle.won Then
+            Print "  WARNING: finishes without pressing anything"
+        Else
+            Print "  no-input run dies at"; Int((idle.x - startX) / (goalX - startX) * 100); "%"
+        End If
+    Next
+    Print
+    If allOk Then Print "All levels beatable." Else Print "Some levels need work."
+    System
+End Sub
+
+Function statePriority& (h As HeroState)
+    Dim p As Long
+    p = h.airJumps
+    If p > 6 Then p = 6
+    p = p * 2
+    If h.grounded Then p = p + 1
+    If h.mode = MODE_WINGS Then p = 15
+    statePriority& = p
+End Function
+
+' Replays a button sequence from a fresh start; TRUE if it reaches the goal.
+Function replayWins& (seq() As _Byte, n As Long)
+    Dim h As HeroState, t As Long
+    initHero h
+    For t = 1 To n + 600
+        simTick = t
+        If t <= n Then simStep h, -seq(t) Else simStep h, 0
+        If Not h.alive Then replayWins& = FALSE: Exit Function
+        If h.won Then replayWins& = TRUE: Exit Function
+    Next
+    replayWins& = FALSE
+End Function
+
+' How forgiving is each press of a winning run? The solver's path is first
+' made human-like: presses that aren't needed are dropped, then every press
+' and release is moved to the middle of the range that still wins. Then each
+' press is moved earlier/later and held shorter/longer, with all other
+' presses unchanged. The hero always runs at the same speed, so the rest of
+' the run stays lined up. 1 tick = 1/60 s.
+Sub timingReport (seq() As _Byte, n As Long)
+    Const MAXP = 300
+    Dim pS(1 To MAXP) As Long, pE(1 To MAXP) As Long, np As Long
+    Dim t As Long, k As Long, pass As Long, lo As Long, hi As Long, sum As Long
+    Dim winS(1 To MAXP) As Long, winH(1 To MAXP) As Long, rank(1 To MAXP) As Long
+    Dim col As Long, shown As Long, before As Long
+    ReDim a(1 To n) As _Byte, tst(1 To n) As _Byte
+    For t = 1 To n: a(t) = seq(t): Next
+
+    findPresses a(), n, pS(), pE(), np
+    before = np
+    ' drop presses that aren't needed (latest first)
+    For k = np To 1 Step -1
+        For t = 1 To n: tst(t) = a(t): Next
+        For t = pS(k) To pE(k): tst(t) = 0: Next
+        If replayWins(tst(), n) Then
+            For t = 1 To n: a(t) = tst(t): Next
+        End If
+    Next
+    findPresses a(), n, pS(), pE(), np
+    If np = 0 Then Exit Sub
+
+    ' centre every press, then every release, in its winning range
+    For pass = 1 To 2
+        For k = 1 To np
+            pressWindow a(), tst(), n, pS(), pE(), np, k, 0, lo, hi
+            applyShift a(), n, pS(), pE(), k, (lo + hi) \ 2, 0
+            pressWindow a(), tst(), n, pS(), pE(), np, k, 1, lo, hi
+            applyShift a(), n, pS(), pE(), k, 0, (lo + hi) \ 2
+        Next
+    Next
+    If Not replayWins(a(), n) Then Print "  (timing analysis lost the win; skipped)": Exit Sub
+
+    For k = 1 To np
+        pressWindow a(), tst(), n, pS(), pE(), np, k, 0, lo, hi: winS(k) = hi - lo + 1
+        pressWindow a(), tst(), n, pS(), pE(), np, k, 1, lo, hi: winH(k) = hi - lo + 1
+        rank(k) = k
+        sum = sum + winS(k)
+    Next
+    For t = 1 To np - 1
+        For k = t + 1 To np
+            If winS(rank(k)) < winS(rank(t)) Or (winS(rank(k)) = winS(rank(t)) And winH(rank(k)) < winH(rank(t))) Then Swap rank(k), rank(t)
+        Next
+    Next
+    Print "  timing:"; np; "presses needed (solver used"; before; "), average window"; Int(sum / np * 10) / 10; "ticks"
+    For t = 1 To np
+        k = rank(t)
+        If shown >= 4 Then Exit For
+        If winS(k) < 7 Or winH(k) < 4 Or shown < 2 Then
+            col = Int((startX + pS(k) * RUN_SPEED) / TILE)
+            Print "    press at col"; col; ": start window"; winS(k); ", hold window"; winH(k);
+            If modeAt(a(), pS(k)) <> MODE_RUN Then
+                ' no landing resets the state, so fixing the later taps
+                ' makes every shift look fatal; a player would adapt
+                Print "  (jetpack/wings: estimate too strict)"
+            Else
+                Print tightness$(winS(k), winH(k))
+            End If
+            shown = shown + 1
+        End If
+    Next
+End Sub
+
+Sub findPresses (a() As _Byte, n As Long, pS() As Long, pE() As Long, np As Long)
+    Dim t As Long, prv As Long, nx As Long
+    np = 0
+    For t = 1 To n
+        prv = 0: nx = 0
+        If t > 1 Then prv = a(t - 1)
+        If t < n Then nx = a(t + 1)
+        If a(t) <> 0 And prv = 0 And np < UBound(pS) Then np = np + 1: pS(np) = t
+        If a(t) <> 0 And nx = 0 And np > 0 Then pE(np) = t
+    Next
+End Sub
+
+' Range of shifts (lo..hi, includes 0) of press k that still win.
+' which = 0 moves the whole press, which = 1 moves only its release.
+Sub pressWindow (a() As _Byte, tst() As _Byte, n As Long, pS() As Long, pE() As Long, np As Long, k As Long, which As Long, lo As Long, hi As Long)
+    Const RANGE = 12
+    Dim d As Long
+    lo = 0: hi = 0
+    For d = -1 To -RANGE Step -1
+        If which = 0 Then
+            If Not shiftedWins(a(), tst(), n, pS(), pE(), np, k, d, 0) Then Exit For
+        Else
+            If Not shiftedWins(a(), tst(), n, pS(), pE(), np, k, 0, d) Then Exit For
+        End If
+        lo = d
+    Next
+    For d = 1 To RANGE
+        If which = 0 Then
+            If Not shiftedWins(a(), tst(), n, pS(), pE(), np, k, d, 0) Then Exit For
+        Else
+            If Not shiftedWins(a(), tst(), n, pS(), pE(), np, k, 0, d) Then Exit For
+        End If
+        hi = d
+    Next
+End Sub
+
+Sub applyShift (a() As _Byte, n As Long, pS() As Long, pE() As Long, k As Long, dStart As Long, dEnd As Long)
+    Dim t As Long
+    If dStart = 0 And dEnd = 0 Then Exit Sub
+    For t = pS(k) To pE(k): a(t) = 0: Next
+    pS(k) = pS(k) + dStart
+    pE(k) = pE(k) + dStart + dEnd
+    For t = pS(k) To pE(k): a(t) = 1: Next
+End Sub
+
+Function tightness$ (ws As Long, wh As Long)
+    Dim w As Long
+    w = ws
+    If wh < w Then w = wh
+    If w <= 2 Then
+        tightness$ = "  <- frame-perfect"
+    ElseIf w <= 4 Then
+        tightness$ = "  <- hard"
+    ElseIf w <= 6 Then
+        tightness$ = "  <- moderate"
+    Else
+        tightness$ = ""
+    End If
+End Function
+
+' Copy of the inputs with press k moved by dStart and its release by dEnd.
+Function shiftedWins& (seq() As _Byte, tst() As _Byte, n As Long, pS() As Long, pE() As Long, np As Long, k As Long, dStart As Long, dEnd As Long)
+    Dim t As Long, a As Long, b As Long
+    a = pS(k) + dStart: b = pE(k) + dStart + dEnd
+    shiftedWins& = FALSE
+    If a < 1 Or b > n Or b < a Then Exit Function
+    ' keep at least one released tick between presses so they stay separate
+    If k > 1 Then If a <= pE(k - 1) + 1 Then Exit Function
+    If k < np Then If b >= pS(k + 1) - 1 Then Exit Function
+    For t = 1 To n: tst(t) = seq(t): Next
+    For t = pS(k) To pE(k): tst(t) = 0: Next
+    For t = a To b: tst(t) = 1: Next
+    shiftedWins& = replayWins(tst(), n)
+End Function
+
+' Hero mode just before tick t of a button sequence.
+Function modeAt& (a() As _Byte, t As Long)
+    Dim h As HeroState, i As Long
+    initHero h
+    For i = 1 To t - 1
+        simTick = i
+        simStep h, -a(i)
+    Next
+    modeAt& = h.mode
+End Function
