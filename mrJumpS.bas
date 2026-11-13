@@ -93,6 +93,14 @@ Const SFX_DIE = 8
 Const SFX_WIN = 9
 Const SFX_ARRIVE = 10
 
+' glow sprite colours
+Const GLOW_CYAN = 1
+Const GLOW_ORANGE = 2
+Const GLOW_GREEN = 3
+Const GLOW_BLUE = 4
+Const GLOW_PURPLE = 5
+Const GLOW_YELLOW = 6
+
 ' presentation timings, in ticks
 Const TELE_TICKS = 42 ' teleport: beam out, camera glides, beam in
 Const POP_TICKS = 90 ' pickup label
@@ -166,6 +174,11 @@ Dim Shared headless As Long
 Dim Shared themes(0 To 3) As Theme, th As Theme
 Dim Shared levelImg As Long, skyImg As Long, farImg As Long, nearImg As Long
 Dim Shared heroImg(0 To 5) As Long
+Dim Shared sprSpikeUp As Long, sprSpikeDown As Long, sprGem As Long, sprPortal As Long
+Dim Shared sprJet As Long, sprFlame As Long, sprWingsBody As Long, sprWingL As Long, sprWingR As Long
+Dim Shared sprFoot As Long, sprSwitchOn As Long, sprSwitchOff As Long, sprBarrier As Long, glow(1 To 6) As Long
+Dim Shared accR As Single, accG As Single, accB As Single, accA As Single
+Dim Shared polyX(1 To 8) As Single, polyY(1 To 8) As Single, polyN As Long, polyOrient As Single
 Dim Shared particles(1 To 300) As Particle
 Dim Shared clouds(1 To 8) As Cloud
 Dim Shared camX As Single, shake As Single, squash As Single, frameCount As Long
@@ -188,6 +201,7 @@ Screen _NewImage(SW, SH, 32)
 _Title "Leap Line"
 initThemes
 initHeroSprites
+initSprites
 loadSounds
 titleLevel = 1
 loadLevel titleLevel
@@ -923,7 +937,6 @@ End Sub
 
 ' Hero frames: 8x10 pixel art drawn at 2x. 0-2 run, 3 jump, 4 fall, 5 idle.
 Sub initHeroSprites
-loadSounds
     Dim body(0 To 7) As String, legs(0 To 5) As String
     Dim f As Long, r As Long, c As Long, s As String, ch As String, col As _Unsigned Long
 
@@ -965,7 +978,11 @@ loadSounds
     _Dest 0
 End Sub
 
-Function mixColor~& (a As _Unsigned Long, b As _Unsigned Long, t As Single)
+Function mixColor~& (a As _Unsigned Long, b As _Unsigned Long, tt As Single)
+    Dim t As Single
+    t = tt
+    If t < 0 Then t = 0
+    If t > 1 Then t = 1
     mixColor~& = _RGB32(_Red32(a) + (_Red32(b) - _Red32(a)) * t, _Green32(a) + (_Green32(b) - _Green32(a)) * t, _Blue32(a) + (_Blue32(b) - _Blue32(a)) * t)
 End Function
 
@@ -1052,6 +1069,7 @@ Sub bakeLevel
 
     If levelImg < -1 Then _FreeImage levelImg
     levelImg = _NewImage(levelCols * TILE, SH, 32)
+    rawWrites levelImg, TRUE
     _Dest levelImg
     For c = 0 To levelCols - 1
         For r = 0 To ROWS - 1
@@ -1076,28 +1094,18 @@ Sub bakeLevel
                     Line (x, y + 6)-Step(TILE - 1, 1), _RGB32(96, 60, 34), BF
                     Line (x + TILE - 2, y)-Step(1, 7), _RGB32(96, 60, 34), BF
                 Case T_SPIKE
-                    drawSpike x, y, FALSE
+                    _PutImage (x, y), sprSpikeUp
                 Case T_SPIKEDOWN
-                    drawSpike x, y, TRUE
+                    _PutImage (x, y), sprSpikeDown
                 Case T_LAVA
                     Line (x, y)-Step(TILE - 1, TILE - 1), _RGB32(214, 64, 30), BF
                     Line (x, y + 3 + hash01(c, r) * 4)-Step(TILE - 1, 3), _RGB32(255, 168, 48), BF
                     If tileAt(c, r - 1) <> T_LAVA Then Line (x, y)-Step(TILE - 1, 2), _RGB32(255, 220, 120), BF
-                Case T_TELEOUT
-                    Line (x + 3, y + TILE - 3)-Step(TILE - 7, 2), _RGB32(220, 120, 255), BF
             End Select
         Next
     Next
+    rawWrites levelImg, FALSE
     _Dest 0
-End Sub
-
-Sub drawSpike (x As Single, y As Single, down As Long)
-    Dim tip As Single, bas As Single
-    If down Then tip = y + TILE - 6: bas = y Else tip = y + 6: bas = y + TILE - 1
-    fillTri x + TILE / 2, tip, 8, bas, _RGB32(214, 214, 226)
-    Line (x + TILE / 2, tip)-(x + TILE / 2 - 8, bas), _RGB32(90, 90, 110)
-    Line (x + TILE / 2, tip)-(x + TILE / 2 + 8, bas), _RGB32(90, 90, 110)
-    Line (x + TILE / 2 - 1, tip + 2)-(x + TILE / 2 - 1, (tip + bas) / 2), _RGB32(255, 255, 255)
 End Sub
 
 Sub render
@@ -1194,34 +1202,31 @@ Sub drawDynamicTiles (cx As Long, oy As Long)
                     Case T_GEM
                         If (hero.gemMask And (2 ^ gemIndex(c, r))) = 0 Or gameState = ST_TITLE Then
                             b = Sin(frameCount / 10 + c) * 3
-                            drawDiamond x + TILE / 2, y + TILE / 2 + b, 8, _RGB32(120, 230, 255)
+                            p = 1 + Sin(frameCount / 9 + c) * .1
+                            putCentered glow(GLOW_CYAN), x + TILE / 2, y + TILE / 2 + b, p, p
+                            putCentered sprGem, x + TILE / 2, y + TILE / 2 + b, 1, 1
+                            twinkle x + TILE / 2 - 4, y + TILE / 2 + b - 6, (frameCount + c * 17) Mod 90
                         End If
                     Case T_TOGGLEA, T_TOGGLEB
-                        If toggleUp(t) Then
-                            drawSpike x, y, FALSE
-                        Else
-                            Line (x + 5, y + TILE - 4)-Step(TILE - 11, 3), _RGB32(150, 150, 170), BF
-                        End If
+                        drawToggleSpike x, y, t
                     Case T_SWITCH
                         If hero.barriersOn Or gameState = ST_TITLE Then
-                            Line (x + 4, y + 4)-Step(TILE - 9, TILE - 9), _RGB32(255, 210, 60), BF
-                            Line (x + 4, y + 4)-Step(TILE - 9, TILE - 9), _RGB32(120, 80, 20), B
-                            Line (x + 9, y + 9)-Step(TILE - 19, TILE - 19), _RGB32(255, 255, 200), BF
+                            p = 1 + Sin(frameCount / 9) * .1
+                            putCentered glow(GLOW_YELLOW), x + TILE / 2, y + TILE / 2, p, p
+                            putCentered sprSwitchOn, x + TILE / 2, y + TILE / 2, 1, 1
                         Else
-                            Line (x + 4, y + 10)-Step(TILE - 9, TILE - 15), _RGB32(150, 120, 60), BF
+                            putCentered sprSwitchOff, x + TILE / 2, y + TILE / 2, 1, 1
                         End If
                     Case T_BARRIER
                         If hero.barriersOn Or gameState = ST_TITLE Then
-                            Line (x + 2, y)-Step(TILE - 5, TILE - 1), _RGB32(255, 210, 60), BF
-                            Line (x + 2, y)-Step(TILE - 5, TILE - 1), _RGB32(120, 80, 20), B
-                            Line (x + 6, y + 6)-Step(TILE - 13, TILE - 13), _RGB32(200, 150, 40), B
+                            _PutImage (x + 2, y), sprBarrier
                         Else
                             Line (x + 2, y)-Step(TILE - 5, TILE - 1), _RGBA32(255, 210, 60, 40), B
                         End If
                     Case T_TELEIN, T_TELEOUT
-                        p = (frameCount Mod 30) / 30
-                        drawOval x + TILE / 2, y + TILE / 2, 6 + p * 6, 11 + p * 4, _RGBA32(220, 120, 255, 255 * (1 - p))
-                        drawOval x + TILE / 2, y + TILE / 2, 6, 11, _RGB32(220, 120, 255)
+                        p = 1 + Sin(frameCount / 7 + c) * .12
+                        putCentered glow(GLOW_PURPLE), x + TILE / 2, y + TILE / 2 - 3, p * 1.1, p * 1.3
+                        putCentered sprPortal, x + TILE / 2, y + TILE / 2 - 3, 1 + (p - 1) * .3, 1 + (p - 1) * .3
                     Case T_JET, T_WINGS, T_NORMAL
                         drawModeOrb x + TILE / 2, y + TILE / 2 + Sin(frameCount / 12 + c) * 2, t
                     Case T_GOAL
@@ -1232,66 +1237,74 @@ Sub drawDynamicTiles (cx As Long, oy As Long)
     Next
 End Sub
 
-Sub drawDiamond (x As Single, y As Single, s As Single, c As _Unsigned Long)
-    fillTri x, y - s, s * .8, y, c
-    Dim i As Long
-    For i = 0 To s
-        Line (x - s * .8 * (1 - i / s), y + i)-(x + s * .8 * (1 - i / s), y + i), shade(c, .75)
-    Next
-    Line (x - 2, y - s + 3)-Step(1, 3), _RGB32(255, 255, 255), BF
-End Sub
-
-Sub drawOval (x As Single, y As Single, rx As Single, ry As Single, c As _Unsigned Long)
-    Dim a As Single, px As Single, py As Single, nx As Single, ny As Single
-    px = x + rx: py = y
-    For a = .4 To 6.4 Step .4
-        nx = x + Cos(a) * rx: ny = y + Sin(a) * ry
-        Line (px, py)-(nx, ny), c
-        px = nx: py = ny
-    Next
-End Sub
-
-Sub fillCircle (x As Single, y As Single, r As Single, c As _Unsigned Long)
-    Dim dy As Long, w As Single
-    For dy = -Int(r) To Int(r)
-        w = Sqr(r * r - dy * dy)
-        Line (x - w, y + dy)-(x + w, y + dy), c
-    Next
-End Sub
-
 ' Mode pickups, each with its own shape so they read at a glance:
 ' jetpack = orange orb with a pack and flame, wings = green orb with wings
 ' sticking out, on foot = pale blue arrow pointing down at the ground.
 Sub drawModeOrb (x As Single, y As Single, t As Long)
-    Dim pulse As Single, f As Single, i As Long, dark As _Unsigned Long
-    pulse = 1 + Sin(frameCount / 8) * .12
-    dark = _RGB32(40, 36, 60)
+    Dim pulse As Single, f As Single
+    pulse = 1 + Sin(frameCount / 8) * .1
     Select Case t
         Case T_JET
-            fillCircle x, y, 14 * pulse, _RGBA32(255, 140, 60, 55)
-            fillCircle x, y, 9, dark
-            fillCircle x, y, 8, _RGB32(255, 140, 60)
-            Line (x - 3, y - 6)-Step(6, 8), _RGB32(96, 96, 116), BF
-            Line (x - 2, y - 5)-Step(1, 6), _RGB32(180, 180, 200), BF
-            fillTri x, y + 7 + Rnd * 2, 3, y + 3, _RGB32(255, 236, 140)
+            putCentered glow(GLOW_ORANGE), x, y, pulse, pulse
+            f = .75 + Rnd * .35 ' flicker
+            _PutImage (x - 4, y + 3)-(x + 4, y + 3 + 13 * f), sprFlame
+            putCentered sprJet, x, y, 1, 1
         Case T_WINGS
-            fillCircle x, y, 14 * pulse, _RGBA32(130, 240, 150, 55)
-            f = Sin(frameCount / 5) * 3
-            For i = 0 To 2
-                Line (x - 6, y - 3 + i * 3)-(x - 17 + i * 3, y - 6 + i * 3 - f), _RGB32(255, 255, 255)
-                Line (x - 6, y - 2 + i * 3)-(x - 17 + i * 3, y - 5 + i * 3 - f), _RGB32(255, 255, 255)
-                Line (x + 6, y - 3 + i * 3)-(x + 17 - i * 3, y - 6 + i * 3 - f), _RGB32(255, 255, 255)
-                Line (x + 6, y - 2 + i * 3)-(x + 17 - i * 3, y - 5 + i * 3 - f), _RGB32(255, 255, 255)
-            Next
-            fillCircle x, y, 8, dark
-            fillCircle x, y, 7, _RGB32(110, 220, 130)
-            fillCircle x - 2, y - 2, 2, _RGB32(210, 255, 220)
+            putCentered glow(GLOW_GREEN), x, y, pulse, pulse
+            f = .55 + .45 * (.5 + .5 * Sin(frameCount / 5)) ' flap
+            _PutImage (x - 22, y - 1 - 8 * f)-(x - 5, y - 1 + 8 * f), sprWingL
+            _PutImage (x + 5, y - 1 - 8 * f)-(x + 22, y - 1 + 8 * f), sprWingR
+            putCentered sprWingsBody, x, y, 1, 1
         Case Else
-            fillCircle x, y, 14 * pulse, _RGBA32(170, 210, 255, 55)
-            fillTri x, y + 9, 10, y - 8, dark
-            fillTri x, y + 7, 8, y - 7, _RGB32(180, 215, 255)
-            Line (x - 9, y + 11)-Step(18, 2), dark, BF
+            putCentered glow(GLOW_BLUE), x, y, pulse, pulse
+            putCentered sprFoot, x, y, 1, 1
     End Select
+End Sub
+
+' Toggle spikes slide: they rise just before they become dangerous and sink
+' just after they stop being dangerous, so what you see is never safer than
+' what the physics does.
+Sub drawToggleSpike (x As Single, y As Single, t As Long)
+    Dim shift As Long
+    shift = Int((1 - toggleVisual(t)) * 18)
+    If shift < 18 Then _PutImage (x, y + shift)-(x + TILE - 1, y + TILE - 1), sprSpikeUp, 0, (0, 0)-(TILE - 1, TILE - 1 - shift)
+    ' the base plate always shows; the spikes sink into it
+    _PutImage (x, y + 20)-(x + TILE - 1, y + TILE - 1), sprSpikeUp, 0, (0, 20)-(TILE - 1, TILE - 1)
+End Sub
+
+Function toggleVisual! (t As Long)
+    Const MOVE = 8
+    Dim ph As Long, rel As Long, period As Long
+    period = TOGGLE_TICKS * 2
+    ph = simTick Mod period
+    If t = T_TOGGLEA Then rel = ph Else rel = (ph + TOGGLE_TICKS) Mod period
+    If rel < TOGGLE_TICKS Then
+        toggleVisual! = 1 ' dangerous
+    ElseIf rel < TOGGLE_TICKS + MOVE Then
+        toggleVisual! = 1 - (rel - TOGGLE_TICKS) / MOVE ' sinking, already safe
+    ElseIf rel >= period - MOVE Then
+        toggleVisual! = (rel - (period - MOVE)) / MOVE ' rising, not dangerous yet
+    Else
+        toggleVisual! = 0
+    End If
+End Function
+
+' A brief four-point sparkle; age counts up, visible for the first 12.
+Sub twinkle (x As Single, y As Single, age As Long)
+    Dim a As Long, s As Single
+    If age >= 12 Then Exit Sub
+    s = Sin(age / 12 * 3.1416)
+    a = 230 * s
+    Line (x - 4 * s, y)-(x + 4 * s, y), _RGBA32(255, 255, 255, a)
+    Line (x, y - 4 * s)-(x, y + 4 * s), _RGBA32(255, 255, 255, a)
+End Sub
+
+' Draw img centred on (x, y), scaled by sx, sy.
+Sub putCentered (img As Long, x As Single, y As Single, sx As Single, sy As Single)
+    Dim w As Single, h As Single
+    w = _Width(img) * sx: h = _Height(img) * sy
+    If w < 1 Or h < 1 Then Exit Sub
+    _PutImage (x - w / 2, y - h / 2)-(x + w / 2 - 1, y + h / 2 - 1), img
 End Sub
 
 Sub drawGoal (x As Single, y As Single)
@@ -1352,7 +1365,7 @@ Sub drawHero (cx As Long, oy As Long, vis As Single)
         Line (x - 6, y + 6 + (frameCount Mod 10 < 5) * 2)-Step(5, 3), _RGB32(255, 255, 255), BF
     End If
     For c = 1 To hero.airJumps
-        drawDiamond x + w / 2 - (hero.airJumps - 1) * 6 + (c - 1) * 12, y - 10, 4, _RGB32(120, 230, 255)
+        putCentered sprGem, x + w / 2 - (hero.airJumps - 1) * 6 + (c - 1) * 12, y - 9, .45, .45
     Next
 End Sub
 
@@ -1389,6 +1402,462 @@ End Sub
 Sub sparkle (x As Single, y As Single)
     spawnParticle x + (Rnd - .5) * 16, y + (Rnd - .5) * 24, (Rnd - .5) * .6, -Rnd * 1.5 - .5, 18, 2, _RGB32(240, 190, 255)
 End Sub
+
+'=============================================================================
+' SPRITES
+' Spikes and pickups are drawn once at startup into small images with smooth
+' edges: every pixel measures how far it is from each shape's edge and the
+' layers are blended by hand. Each frame then only needs _PutImage.
+'=============================================================================
+
+Sub initSprites
+    sprSpikeUp = makeSpike(FALSE)
+    sprSpikeDown = makeSpike(TRUE)
+    sprGem = makeGem
+    sprJet = makeJetOrb
+    sprFlame = makeFlame
+    sprWingsBody = makeWingsOrb
+    sprWingL = makeWing(FALSE)
+    sprWingR = makeWing(TRUE)
+    sprFoot = makeFootOrb
+    sprSwitchOn = makeSwitch(TRUE)
+    sprSwitchOff = makeSwitch(FALSE)
+    sprPortal = makePortal
+    sprBarrier = makeBarrier
+    glow(GLOW_CYAN) = makeGlow(_RGB32(120, 230, 255))
+    glow(GLOW_ORANGE) = makeGlow(_RGB32(255, 150, 60))
+    glow(GLOW_GREEN) = makeGlow(_RGB32(130, 240, 150))
+    glow(GLOW_BLUE) = makeGlow(_RGB32(170, 210, 255))
+    glow(GLOW_PURPLE) = makeGlow(_RGB32(210, 120, 255))
+    glow(GLOW_YELLOW) = makeGlow(_RGB32(255, 220, 90))
+
+    Dim i As Long
+    rawWrites sprSpikeUp, FALSE: rawWrites sprSpikeDown, FALSE: rawWrites sprGem, FALSE
+    rawWrites sprJet, FALSE: rawWrites sprFlame, FALSE: rawWrites sprWingsBody, FALSE
+    rawWrites sprWingL, FALSE: rawWrites sprWingR, FALSE: rawWrites sprFoot, FALSE
+    rawWrites sprSwitchOn, FALSE: rawWrites sprSwitchOff, FALSE: rawWrites sprPortal, FALSE: rawWrites sprBarrier, FALSE
+    For i = 1 To 6: rawWrites glow(i), FALSE: Next
+End Sub
+
+' QB64 blends semi-transparent pixels into an empty image as if it were
+' black, which leaves dark fringes on soft edges, so while building an image
+' we write pixels as-is, then switch blending back on (QB64 uses the source
+' image's setting when it _PutImage's it). The browser canvas in QBJS gets
+' this right by itself, so QBJS skips it.
+Sub rawWrites (img As Long, raw As Long)
+$If WEB Then
+$Else
+    If raw Then _DontBlend img Else _Blend img
+$End If
+End Sub
+
+Function newSprite& (w As Long, h As Long)
+    Dim img As Long
+    img = _NewImage(w, h, 32)
+    rawWrites img, TRUE
+    _Dest img
+    newSprite& = img
+End Function
+
+'--- per-pixel blending: pxBegin, then pxLayer from back to front, then pxEnd
+
+Sub pxBegin
+    accR = 0: accG = 0: accB = 0: accA = 0
+End Sub
+
+' Paint colour c over the current pixel with coverage cv (0..1).
+Sub pxLayer (c As _Unsigned Long, cv As Single)
+    Dim a As Single, keep As Single, outA As Single
+    If cv <= 0 Then Exit Sub
+    a = _Alpha32(c) / 255 * cv
+    If a > 1 Then a = 1
+    keep = accA * (1 - a)
+    outA = a + keep
+    If outA <= 0 Then Exit Sub
+    accR = (_Red32(c) * a + accR * keep) / outA
+    accG = (_Green32(c) * a + accG * keep) / outA
+    accB = (_Blue32(c) * a + accB * keep) / outA
+    accA = outA
+End Sub
+
+Sub pxEnd (x As Long, y As Long)
+    If accA > .004 Then PSet (x, y), _RGBA32(accR, accG, accB, accA * 255)
+End Sub
+
+' How much of a pixel a shape covers, from the signed distance to its edge
+' (negative = inside). This one-pixel ramp is what makes the edges smooth.
+Function cov! (d As Single)
+    If d <= -.5 Then
+        cov! = 1
+    ElseIf d >= .5 Then
+        cov! = 0
+    Else
+        cov! = .5 - d
+    End If
+End Function
+
+'--- signed distances to shapes
+
+Function sdCircle! (px As Single, py As Single, cx As Single, cy As Single, r As Single)
+    sdCircle! = Sqr((px - cx) * (px - cx) + (py - cy) * (py - cy)) - r
+End Function
+
+' Box centred on (cx, cy), half sizes hw x hh, corners rounded by rad.
+Function sdBox! (px As Single, py As Single, cx As Single, cy As Single, hw As Single, hh As Single, rad As Single)
+    Dim qx As Single, qy As Single, ox As Single, oy As Single, m As Single
+    qx = Abs(px - cx) - hw + rad: qy = Abs(py - cy) - hh + rad
+    ox = qx: oy = qy
+    If ox < 0 Then ox = 0
+    If oy < 0 Then oy = 0
+    m = qx
+    If qy > m Then m = qy
+    If m > 0 Then m = 0
+    sdBox! = Sqr(ox * ox + oy * oy) + m - rad
+End Function
+
+' Ellipse starting at (ax, ay) along angle ang, length ln, half-thickness th.
+Function sdFeather! (px As Single, py As Single, ax As Single, ay As Single, ang As Single, ln As Single, th As Single)
+    Dim dx As Single, dy As Single, mx As Single, my As Single, u As Single, v As Single
+    dx = Cos(ang): dy = Sin(ang)
+    mx = px - (ax + dx * ln / 2): my = py - (ay + dy * ln / 2)
+    u = (mx * dx + my * dy) / (ln / 2)
+    v = (-mx * dy + my * dx) / th
+    sdFeather! = (Sqr(u * u + v * v) - 1) * th
+End Function
+
+Sub setPoly3 (x1 As Single, y1 As Single, x2 As Single, y2 As Single, x3 As Single, y3 As Single)
+    polyN = 3
+    polyX(1) = x1: polyY(1) = y1: polyX(2) = x2: polyY(2) = y2: polyX(3) = x3: polyY(3) = y3
+    fixPolyOrient
+End Sub
+
+Sub setPoly5 (x1 As Single, y1 As Single, x2 As Single, y2 As Single, x3 As Single, y3 As Single, x4 As Single, y4 As Single, x5 As Single, y5 As Single)
+    polyN = 5
+    polyX(1) = x1: polyY(1) = y1: polyX(2) = x2: polyY(2) = y2: polyX(3) = x3: polyY(3) = y3
+    polyX(4) = x4: polyY(4) = y4: polyX(5) = x5: polyY(5) = y5
+    fixPolyOrient
+End Sub
+
+' Make sdPoly negative inside, whichever way round the points were given.
+Sub fixPolyOrient
+    Dim i As Long, cx As Single, cy As Single
+    For i = 1 To polyN
+        cx = cx + polyX(i): cy = cy + polyY(i)
+    Next
+    polyOrient = 1
+    If sdPoly(cx / polyN, cy / polyN) > 0 Then polyOrient = -1
+End Sub
+
+' Distance to a convex polygon (exact inside and near the edges, which is
+' all the edge smoothing needs).
+Function sdPoly! (px As Single, py As Single)
+    Dim i As Long, j As Long, ex As Single, ey As Single, d As Single, m As Single
+    m = -1E+9
+    For i = 1 To polyN
+        j = i Mod polyN + 1
+        ex = polyX(j) - polyX(i): ey = polyY(j) - polyY(i)
+        d = ((px - polyX(i)) * ey - (py - polyY(i)) * ex) / Sqr(ex * ex + ey * ey) * polyOrient
+        If d > m Then m = d
+    Next
+    sdPoly! = m
+End Function
+
+' Shading for a ball of radius r centred at (cx, cy), lit from the top left.
+Function sphereShade~& (c As _Unsigned Long, px As Single, py As Single, cx As Single, cy As Single, r As Single)
+    Dim nx As Single, ny As Single, t As Single, lam As Single, f As Single, spec As Single
+    Dim rr As Single, gg As Single, bb As Single
+    nx = (px - cx) / r: ny = (py - cy) / r
+    t = 1 - nx * nx - ny * ny
+    If t < 0 Then t = 0
+    lam = -.45 * nx - .55 * ny + .7 * Sqr(t)
+    If lam < 0 Then lam = 0
+    f = .5 + .65 * lam
+    spec = (lam ^ 20) * .8
+    rr = _Red32(c) * f + 255 * spec: gg = _Green32(c) * f + 255 * spec: bb = _Blue32(c) * f + 255 * spec
+    If rr > 255 Then rr = 255
+    If gg > 255 Then gg = 255
+    If bb > 255 Then bb = 255
+    sphereShade~& = _RGB32(rr, gg, bb)
+End Function
+
+'--- the sprites
+
+' Steel spikes for one tile: a big spike with two small ones behind it, on a
+' base plate, lit from the left. flip = the hanging version.
+Function makeSpike& (flip As Long)
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single, t As Single
+    Dim ink As _Unsigned Long, lit As _Unsigned Long, shd As _Unsigned Long
+    ink = _RGB32(36, 36, 52)
+    img = newSprite(TILE, TILE)
+    For py = 0 To TILE - 1
+        For px = 0 To TILE - 1
+            X = px + .5: Y = py + .5
+            If flip Then Y = TILE - Y
+            t = (Y - 4) / 18
+            lit = mixColor(_RGB32(238, 242, 250), _RGB32(170, 176, 198), t)
+            shd = mixColor(_RGB32(150, 156, 180), _RGB32(92, 96, 120), t)
+            pxBegin
+            setPoly3 5, 11, 1, 22.5, 9.5, 22.5
+            d = sdPoly(X, Y)
+            pxLayer ink, cov(d)
+            If X < 5 Then pxLayer lit, cov(d + 1) Else pxLayer shd, cov(d + 1)
+            setPoly3 20, 11, 15.5, 22.5, 24, 22.5
+            d = sdPoly(X, Y)
+            pxLayer ink, cov(d)
+            If X < 20 Then pxLayer lit, cov(d + 1) Else pxLayer shd, cov(d + 1)
+            setPoly3 12.5, 2.5, 4.5, 22.5, 20.5, 22.5
+            d = sdPoly(X, Y)
+            pxLayer ink, cov(d)
+            If X < 12.5 Then pxLayer lit, cov(d + 1) Else pxLayer shd, cov(d + 1)
+            pxLayer _RGBA32(255, 255, 255, 70), cov(Abs(X - 12.5) - .4) * cov(d + 2)
+            pxLayer _RGBA32(255, 255, 255, 230), cov(sdCircle(X, Y, 11.3, 8.5, .9))
+            d = sdBox(X, Y, 12.5, 23, 11.5, 2, 1)
+            pxLayer ink, cov(d)
+            pxLayer mixColor(_RGB32(128, 134, 156), _RGB32(76, 80, 100), (Y - 21.5) / 3), cov(d + 1)
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeSpike& = img
+End Function
+
+' Cut diamond: lighter crown facets on top, darker pavilion below.
+Function makeGem&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single
+    Dim c As _Unsigned Long, xl As Single, xr As Single
+    img = newSprite(20, 24)
+    For py = 0 To 23
+        For px = 0 To 19
+            X = px + .5: Y = py + .5
+            pxBegin
+            setPoly5 6, 2, 14, 2, 19, 8.5, 10, 22.5, 1, 8.5
+            d = sdPoly(X, Y)
+            pxLayer _RGB32(24, 64, 112), cov(d)
+            If Y < 8.5 Then
+                If X < 6.5 Then
+                    c = _RGB32(214, 250, 255)
+                ElseIf X > 13.5 Then
+                    c = _RGB32(112, 202, 246)
+                Else
+                    c = _RGB32(172, 238, 255)
+                End If
+            Else
+                xl = 5 + (Y - 8.5) / 14 * 5: xr = 15 - (Y - 8.5) / 14 * 5
+                If X < xl Then
+                    c = _RGB32(96, 192, 242)
+                ElseIf X > xr Then
+                    c = _RGB32(40, 132, 210)
+                Else
+                    c = _RGB32(70, 166, 232)
+                End If
+            End If
+            pxLayer c, cov(d + 1)
+            pxLayer _RGBA32(255, 255, 255, 110), cov(Abs(Y - 8.5) - .5) * cov(d + 1.5)
+            pxLayer _RGBA32(255, 255, 255, 240), cov(sdCircle(X, Y, 6.5, 5, 1.2))
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeGem& = img
+End Function
+
+' Soft round glow, strongest in the middle.
+Function makeGlow& (c As _Unsigned Long)
+    Dim img As Long, px As Long, py As Long, d As Single
+    img = newSprite(48, 48)
+    For py = 0 To 47
+        For px = 0 To 47
+            d = Sqr((px + .5 - 24) * (px + .5 - 24) + (py + .5 - 24) * (py + .5 - 24)) / 24
+            If d < 1 Then
+                pxBegin
+                pxLayer c, (1 - d) * (1 - d) * .5
+                pxEnd px, py
+            End If
+        Next
+    Next
+    _Dest 0
+    makeGlow& = img
+End Function
+
+Function makeJetOrb&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single
+    img = newSprite(24, 24)
+    For py = 0 To 23
+        For px = 0 To 23
+            X = px + .5: Y = py + .5
+            pxBegin
+            d = sdCircle(X, Y, 12, 12, 9.5)
+            pxLayer _RGB32(96, 40, 18), cov(d)
+            pxLayer sphereShade(_RGB32(255, 138, 48), X, Y, 12, 12, 9.5), cov(d + 1)
+            d = sdBox(X, Y, 12, 11, 3.5, 4.5, 1.5)
+            pxLayer _RGB32(40, 40, 58), cov(d)
+            pxLayer mixColor(_RGB32(200, 202, 220), _RGB32(110, 112, 134), (X - 8.5) / 7), cov(d + 1)
+            d = sdBox(X, Y, 12, 16.5, 2, 1.2, .5)
+            pxLayer _RGB32(40, 40, 58), cov(d)
+            pxLayer _RGB32(90, 92, 112), cov(d + 1)
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeJetOrb& = img
+End Function
+
+' Teardrop flame, yellow at the top fading to orange.
+Function makeFlame&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single, d2 As Single
+    img = newSprite(8, 13)
+    For py = 0 To 12
+        For px = 0 To 7
+            X = px + .5: Y = py + .5
+            pxBegin
+            d = sdCircle(X, Y, 4, 4, 3.2)
+            setPoly3 1, 4, 7, 4, 4, 12.5
+            d2 = sdPoly(X, Y)
+            If d2 < d Then d = d2
+            pxLayer mixColor(_RGB32(255, 250, 200), _RGB32(255, 120, 30), Y / 12), cov(d) * .95
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeFlame& = img
+End Function
+
+Function makeWingsOrb&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single
+    img = newSprite(22, 22)
+    For py = 0 To 21
+        For px = 0 To 21
+            X = px + .5: Y = py + .5
+            pxBegin
+            d = sdCircle(X, Y, 11, 11, 8.5)
+            pxLayer _RGB32(20, 72, 36), cov(d)
+            pxLayer sphereShade(_RGB32(92, 214, 116), X, Y, 11, 11, 8.5), cov(d + 1)
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeWingsOrb& = img
+End Function
+
+' Three feathers fanning out from the orb; mirror = the right-hand wing.
+Function makeWing& (mirror As Long)
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single, i As Long
+    Dim ang As Single, ln As Single, e As Single
+    img = newSprite(18, 16)
+    For py = 0 To 15
+        For px = 0 To 17
+            X = px + .5: Y = py + .5
+            If mirror Then X = 18 - X
+            d = 1E+9
+            For i = 0 To 2
+                ang = 3.1416 + (.55 - i * .45) ' pointing left, fanned out
+                ln = 16.5 - i * 3
+                e = sdFeather(X, Y, 17, 8, ang, ln, 2.3)
+                If e < d Then d = e
+            Next
+            pxBegin
+            pxLayer _RGB32(118, 128, 160), cov(d)
+            pxLayer mixColor(_RGB32(255, 255, 255), _RGB32(200, 212, 236), (17 - X) / 17), cov(d + 1)
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeWing& = img
+End Function
+
+' Rounded arrow pointing down at a little ground bar.
+Function makeFootOrb&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single
+    img = newSprite(22, 26)
+    For py = 0 To 25
+        For px = 0 To 21
+            X = px + .5: Y = py + .5
+            pxBegin
+            setPoly3 4.5, 5, 17.5, 5, 11, 15.5
+            d = sdPoly(X, Y) - 1.8
+            pxLayer _RGB32(40, 52, 88), cov(d)
+            pxLayer mixColor(_RGB32(228, 240, 255), _RGB32(128, 178, 242), (Y - 3) / 14), cov(d + 1)
+            pxLayer _RGBA32(255, 255, 255, 120), cov(sdBox(X, Y, 11, 5.2, 5.5, .6, .6))
+            d = sdBox(X, Y, 11, 22, 8.5, 1.8, .9)
+            pxLayer _RGB32(40, 52, 88), cov(d)
+            pxLayer _RGB32(124, 146, 188), cov(d + 1)
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeFootOrb& = img
+End Function
+
+Function makeSwitch& (onState As Long)
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single
+    img = newSprite(19, 19)
+    For py = 0 To 18
+        For px = 0 To 18
+            X = px + .5: Y = py + .5
+            pxBegin
+            If onState Then
+                d = sdBox(X, Y, 9.5, 9.5, 7.5, 7.5, 3)
+                pxLayer _RGB32(112, 72, 12), cov(d)
+                pxLayer mixColor(_RGB32(255, 234, 120), _RGB32(232, 162, 36), (Y - 2) / 15), cov(d + 1)
+                d = sdCircle(X, Y, 9.5, 9.5, 3.5)
+                pxLayer _RGB32(140, 92, 20), cov(d)
+                pxLayer _RGB32(255, 250, 216), cov(d + 1)
+            Else
+                d = sdBox(X, Y, 9.5, 15, 7.5, 3, 1.5)
+                pxLayer _RGB32(90, 60, 14), cov(d)
+                pxLayer mixColor(_RGB32(186, 146, 70), _RGB32(140, 104, 44), (Y - 12) / 6), cov(d + 1)
+            End If
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeSwitch& = img
+End Function
+
+' Barrier block: rounded, with soft yellow and dark hazard stripes.
+Function makeBarrier&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single, v As Single
+    img = newSprite(21, TILE)
+    For py = 0 To TILE - 1
+        For px = 0 To 20
+            X = px + .5: Y = py + .5
+            pxBegin
+            d = sdBox(X, Y, 10.5, 12.5, 10, 12, 2.5)
+            pxLayer _RGB32(100, 66, 12), cov(d)
+            pxLayer mixColor(_RGB32(255, 222, 96), _RGB32(232, 160, 34), Y / TILE), cov(d + 1)
+            v = Sin((X + Y) * 3.1416 / 5) * 3 + .5 ' stripes with soft edges
+            If v > 1 Then v = 1
+            If v > 0 Then pxLayer _RGBA32(70, 52, 24, 170), v * cov(d + 3)
+            pxLayer _RGBA32(255, 255, 230, 140), cov(Abs(d + 2) - .5) * cov(Y - 12)
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeBarrier& = img
+End Function
+
+' Upright ring, lit on its upper left.
+Function makePortal&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single
+    Dim qx As Single, qy As Single, e As Single, h As Single
+    img = newSprite(22, 32)
+    For py = 0 To 31
+        For px = 0 To 21
+            X = px + .5: Y = py + .5
+            qx = (X - 11) / 8: qy = (Y - 16) / 13
+            e = (Sqr(qx * qx + qy * qy) - 1) * 9
+            d = Abs(e) - 1.8
+            h = .5 + .5 * Cos(_Atan2(Y - 16, X - 11) + 2.4)
+            pxBegin
+            pxLayer _RGBA32(230, 170, 255, 60), cov(e)
+            pxLayer _RGB32(84, 26, 140), cov(d)
+            pxLayer mixColor(_RGB32(150, 70, 232), _RGB32(255, 214, 255), h), cov(d + .9)
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makePortal& = img
+End Function
 
 '--- particles
 
