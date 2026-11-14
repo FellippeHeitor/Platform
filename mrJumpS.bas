@@ -65,7 +65,7 @@ Const STEP_TOL = 7
 Const HERO_W = 14
 Const HERO_H = 20
 Const TOGGLE_TICKS = 50
-Const MAX_GEMS = 30 ' diamonds and fuel cans per level
+Const MAX_GEMS = 30 ' one-time pickups (diamonds, fuel cans, power-ups) per level
 Const JET_FUEL = 150 ' ticks of thrust in a fresh jetpack (2.5 s held)
 Const FUEL_CAN = 75 ' ticks of thrust added by a fuel can
 Const WING_TICKS = 150 ' how long wings last (2.5 s)
@@ -958,13 +958,15 @@ Sub touchTiles (h As HeroState)
                         Exit Sub
                     End If
                 Case T_JET, T_WINGS, T_NORMAL
-                    m = MODE_RUN
-                    If t = T_JET Then m = MODE_JET
-                    If t = T_WINGS Then m = MODE_WINGS
-                    ' grabbing a power-up again refills it, silently
-                    If m = MODE_JET And h.fuel < jetFuelFull Then h.fuel = jetFuelFull
-                    If m = MODE_WINGS Then h.wingTicks = wingFull
-                    If h.mode <> m Then
+                    ' one-time pickups, like diamonds: gone once collected
+                    bit = 2 ^ gemIndex(c, r)
+                    If (h.gemMask And bit) = 0 Then
+                        h.gemMask = h.gemMask Or bit
+                        m = MODE_RUN
+                        If t = T_JET Then m = MODE_JET
+                        If t = T_WINGS Then m = MODE_WINGS
+                        If m = MODE_JET And h.fuel < jetFuelFull Then h.fuel = jetFuelFull
+                        If m = MODE_WINGS Then h.wingTicks = wingFull
                         h.mode = m
                         h.jumping = FALSE
                         simEvents = simEvents Or EV_MODE
@@ -1033,9 +1035,12 @@ Sub loadLevel (n As Long)
                 Case "B": tiles(c, r) = T_BARRIER
                 Case "O": tiles(c, r) = T_TELEIN
                 Case "o": tiles(c, r) = T_TELEOUT
-                Case "J": tiles(c, r) = T_JET
-                Case "W": tiles(c, r) = T_WINGS
-                Case "N": tiles(c, r) = T_NORMAL
+                Case "J", "W", "N"
+                    If ch = "J" Then tiles(c, r) = T_JET
+                    If ch = "W" Then tiles(c, r) = T_WINGS
+                    If ch = "N" Then tiles(c, r) = T_NORMAL
+                    gemIndex(c, r) = gems Mod MAX_GEMS
+                    gems = gems + 1
                 Case "G": tiles(c, r) = T_GOAL: goalX = c * TILE: goalRow = r
                 Case "@": startX = c * TILE + (TILE - HERO_W) / 2: startY = r * TILE + TILE - HERO_H
                 Case Else: tiles(c, r) = T_EMPTY
@@ -1403,7 +1408,9 @@ Sub drawDynamicTiles (cx As Long, oy As Long)
                         putCentered glow(GLOW_PURPLE), x + TILE / 2, y + TILE / 2 - 3, p * 1.1, p * 1.3
                         putCentered sprPortal, x + TILE / 2, y + TILE / 2 - 3, 1 + (p - 1) * .3, 1 + (p - 1) * .3
                     Case T_JET, T_WINGS, T_NORMAL
-                        drawModeOrb x + TILE / 2, y + TILE / 2 + Sin(frameCount / 12 + c) * 2, t
+                        If (hero.gemMask And (2 ^ gemIndex(c, r))) = 0 Or gameState = ST_TITLE Then
+                            drawModeOrb x + TILE / 2, y + TILE / 2 + Sin(frameCount / 12 + c) * 2, t
+                        End If
                     Case T_GOAL
                         drawGoal x, y
                 End Select

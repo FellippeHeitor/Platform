@@ -34,9 +34,12 @@ code). Build natively from the QB64-PE folder:
   spikes and low ceilings, planks, diamonds (one extra air jump each) over
   lava, and alternating spikes / switches and barriers / teleporters. The
   last five are built around limited power-ups:
-  - **Jetpack**: every press is a flap, but fuel is limited (a gauge shows
-    what's left); **fuel cans** add flaps. When it's empty you drop.
+  - **Jetpack**: hold to thrust upward; taps burn less fuel than holds. Fuel
+    is limited (a gauge shows what's left) and **fuel cans** top it up. When
+    it's empty you drop.
   - **Wings**: unlimited air jumps for 2.5 seconds (a bar shows the time).
+  - Every pickup (diamonds, fuel cans, jetpack, wings) can be collected once
+    per attempt and disappears when taken.
 - Four themes with parallax hills, clouds, water, particles, a pixel-art
   hero with squash and stretch, and soft sound effects.
 
