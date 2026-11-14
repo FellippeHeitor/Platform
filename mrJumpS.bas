@@ -2520,9 +2520,23 @@ Sub loadSounds
     names(7) = "mode": names(8) = "die": names(9) = "win"
     names(10) = "arrive"
     For i = 1 To 10
-        sounds(i) = _SndOpen("sfx/" + names(i) + ".wav")
+        sounds(i) = _SndOpen(sfxPath(names(i)))
     Next
 End Sub
+
+' Native builds read sfx/ next to the program. In the browser (QBJS) the
+' files come from the project if they were added to it, otherwise from the
+' GitHub repo through jsDelivr, so sharing just the .bas still has sound.
+' The link is pinned to the commit that last changed sfx/; update it (and
+' push) after remaking the sounds.
+Function sfxPath$ (n As String)
+    sfxPath$ = "sfx/" + n + ".wav"
+$If WEB Then
+    If Not _FileExists(sfxPath$) Then
+        sfxPath$ = "https://cdn.jsdelivr.net/gh/FellippeHeitor/Platform@24182109ca6eeec128c100141ed66c4bac318b6a/sfx/" + n + ".wav"
+    End If
+$End If
+End Function
 
 Sub sfx (n As Long)
     If muted Or headless Then Exit Sub
