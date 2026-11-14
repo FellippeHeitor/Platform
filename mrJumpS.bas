@@ -1999,7 +1999,7 @@ End Sub
 ' all the edge smoothing needs).
 Function sdPoly! (px As Single, py As Single)
     Dim i As Long, j As Long, ex As Single, ey As Single, d As Single, m As Single
-    m = -1E+9
+    m = -1000000000
     For i = 1 To polyN
         j = i Mod polyN + 1
         ex = polyX(j) - polyX(i): ey = polyY(j) - polyY(i)
@@ -2195,7 +2195,7 @@ Function makeWing& (mirror As Long)
         For px = 0 To 17
             X = px + .5: Y = py + .5
             If mirror Then X = 18 - X
-            d = 1E+9
+            d = 1000000000
             For i = 0 To 2
                 ang = 3.1416 + (.55 - i * .45) ' pointing left, fanned out
                 ln = 16.5 - i * 3
