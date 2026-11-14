@@ -209,10 +209,13 @@ Dim Shared camX As Single, shake As Single, squash As Single, frameCount As Long
 Dim Shared gameState As Long, stateTicks As Long, muted As Long
 Dim Shared deathsTotal As Long, levelDeaths As Long, attempt As Long
 Dim Shared bestPct(1 To 99) As Long, lastPct As Long, deathCause As Long
+Const SND_RATE = 22050 ' sample rate of the generated sounds
 Dim Shared titleLevel As Long, sounds(1 To 10) As Long
 Dim Shared popText As String, popHint As String, popLife As Long, popColor As _Unsigned Long
 Dim Shared teleT As Long, teleFromX As Single, teleFromY As Single
 Dim Shared teleCamFrom As Single, teleCamTo As Single
+Const TEXT_CACHE = 16
+Dim Shared textKey(1 To TEXT_CACHE) As String, textImg(1 To TEXT_CACHE) As Long, textNext As Long
 
 Randomize Timer
 jetFuelFull = JET_FUEL: fuelCanAmt = FUEL_CAN: wingFull = WING_TICKS
@@ -1916,7 +1919,7 @@ End Sub
 Sub pxLayer (c As _Unsigned Long, cv As Single)
     Dim a As Single, keep As Single, outA As Single
     If cv <= 0 Then Exit Sub
-    a = _Alpha32(c) / 255 * cv
+    a = alpha32(c) / 255 * cv
     If a > 1 Then a = 1
     keep = accA * (1 - a)
     outA = a + keep
@@ -2391,7 +2394,7 @@ Sub drawParticles (cx As Long, oy As Long)
             a = particles(i).life / particles(i).maxLife
             c = particles(i).c
             s = particles(i).size
-            Line (particles(i).x - cx - s / 2, particles(i).y + oy - s / 2)-Step(s, s), _RGBA32(_Red32(c), _Green32(c), _Blue32(c), _Alpha32(c) * a), BF
+            Line (particles(i).x - cx - s / 2, particles(i).y + oy - s / 2)-Step(s, s), _RGBA32(_Red32(c), _Green32(c), _Blue32(c), alpha32(c) * a), BF
         End If
     Next
 End Sub
@@ -2399,14 +2402,57 @@ End Sub
 '--- text and screens
 
 ' Scaled text: print into a small image, then stretch it onto the screen.
+' Large text: each string is printed once, every pixel snapped fully on or
+' off (browser fonts have soft edges that turn into grey blocks when scaled
+' up), then cached and scaled. Fading text reuses a few alpha steps.
 Sub bigText (s As String, cx As Single, cy As Single, scale As Single, c As _Unsigned Long)
-    Dim x As Single, y As Single, w As Long, h As Long
+    Dim x As Single, y As Single, w As Long, h As Long, a As Long, img As Long
     If Len(s) = 0 Then Exit Sub
     w = _PrintWidth(s): h = _FontHeight
     x = cx - w * scale / 2: y = cy - h * scale / 2
-    putText s, x + scale, y + scale, scale, _RGBA32(30, 26, 46, _Alpha32(c))
-    putText s, x, y, scale, c
+    a = alpha32(c)
+    If a >= 224 Then a = 255 Else a = (a \ 32) * 32
+    If a = 0 Then Exit Sub
+    img = crispText(s, _RGBA32(30, 26, 46, a))
+    _PutImage (x + scale, y + scale)-(x + scale + w * scale - 1, y + scale + h * scale - 1), img
+    img = crispText(s, _RGBA32(_Red32(c), _Green32(c), _Blue32(c), a))
+    _PutImage (x, y)-(x + w * scale - 1, y + h * scale - 1), img
 End Sub
+
+Function crispText& (s As String, c As _Unsigned Long)
+    Dim i As Long, k As String, tmp As Long, img As Long, w As Long, h As Long, x As Long, y As Long
+    k = s + "|" + Hex$(c)
+    For i = 1 To TEXT_CACHE
+        If textKey(i) = k Then crispText& = textImg(i): Exit Function
+    Next
+    w = _PrintWidth(s): h = _FontHeight
+    tmp = _NewImage(w, h, 32)
+    _Dest tmp
+    _PrintMode _KeepBackground
+    Color _RGB32(255, 255, 255)
+    _PrintString (0, 0), s
+    img = _NewImage(w, h, 32)
+    _Dest img
+    _Source tmp
+    For y = 0 To h - 1
+        For x = 0 To w - 1
+            If alpha32(Point(x, y)) >= 128 Then PSet (x, y), c
+        Next
+    Next
+    _Source 0
+    _Dest 0
+    _FreeImage tmp
+    textNext = textNext Mod TEXT_CACHE + 1
+    If textImg(textNext) <> 0 Then _FreeImage textImg(textNext)
+    textImg(textNext) = img: textKey(textNext) = k
+    crispText& = img
+End Function
+
+' Alpha (0-255) of a 32-bit colour. qbjs.org's _Alpha32 returns 0-1 (fixed
+' in newer QBJS), so read the top byte directly.
+Function alpha32& (c As _Unsigned Long)
+    alpha32& = (c \ 16777216) And 255
+End Function
 
 Sub putText (s As String, x As Single, y As Single, scale As Single, c As _Unsigned Long)
     Dim img As Long, w As Long, h As Long
@@ -2520,9 +2566,99 @@ Sub loadSounds
     names(7) = "mode": names(8) = "die": names(9) = "win"
     names(10) = "arrive"
     For i = 1 To 10
+$If WEB Then
+$Else
+        makeSoundIfMissing names(i)
+$End If
         sounds(i) = _SndOpen(sfxPath(names(i)))
     Next
 End Sub
+
+$If WEB Then
+$Else
+'--- native only (QBJS still compiles these subs but never calls them, as
+' it can't write files): the sounds are generated here, so a native build doesn't
+' need sfx/ shipped with it; any missing WAV is written on startup. To change
+' a sound, edit its numbers below, delete its file and run the game. (QBJS
+' loads the committed WAVs instead, see sfxPath.)
+'
+' Each sound is a sum of soft sine "voices": a pitch glide with a smooth
+' attack and an exponential fade, kept quiet (peaks well below full scale).
+Sub makeSoundIfMissing (n As String)
+    Dim buf(0) As Single, f As String
+    f = "sfx/" + n + ".wav"
+    If _FileExists(f) Then Exit Sub
+    If Not _DirExists("sfx") Then MkDir "sfx"
+    ' voices: start Hz, end Hz, delay s, length s, volume
+    Select Case n
+        Case "jump"
+            sndNew buf(), .12: sndVoice buf(), 330, 560, 0, .1, .22: sndVoice buf(), 660, 1120, 0, .06, .05
+        Case "airjump"
+            sndNew buf(), .14: sndVoice buf(), 520, 860, 0, .12, .18: sndVoice buf(), 1040, 1720, .01, .08, .05
+        Case "flap"
+            sndNew buf(), .08: sndVoice buf(), 230, 320, 0, .07, .14
+        Case "gem"
+            sndNew buf(), .3: sndVoice buf(), 1318, 1318, 0, .22, .12: sndVoice buf(), 1760, 1760, .06, .24, .1
+        Case "switch"
+            sndNew buf(), .2: sndVoice buf(), 440, 440, 0, .09, .14: sndVoice buf(), 660, 660, .08, .12, .14
+        Case "teleport"
+            sndNew buf(), .3: sndVoice buf(), 300, 1200, 0, .28, .12: sndVoice buf(), 450, 1800, .02, .24, .04
+        Case "arrive"
+            sndNew buf(), .3: sndVoice buf(), 1200, 300, 0, .26, .1: sndVoice buf(), 1800, 450, .02, .22, .03
+        Case "mode"
+            sndNew buf(), .25: sndVoice buf(), 660, 660, 0, .08, .1: sndVoice buf(), 880, 880, .06, .08, .1: sndVoice buf(), 1100, 1100, .12, .12, .1
+        Case "die"
+            sndNew buf(), .4: sndVoice buf(), 420, 110, 0, .36, .24: sndVoice buf(), 210, 70, .02, .34, .1
+        Case "win"
+            sndNew buf(), .7: sndVoice buf(), 523, 523, 0, .25, .14: sndVoice buf(), 659, 659, .1, .25, .14
+            sndVoice buf(), 784, 784, .2, .25, .14: sndVoice buf(), 1046, 1046, .3, .38, .14
+        Case Else
+            Exit Sub
+    End Select
+    sndSaveWav buf(), f
+End Sub
+
+Sub sndNew (buf() As Single, seconds As Single)
+    ReDim buf(0 To Int(seconds * SND_RATE) - 1) As Single
+End Sub
+
+' One soft sine tone gliding from f1 to f2 Hz.
+Sub sndVoice (buf() As Single, f1 As Single, f2 As Single, delay As Single, length As Single, vol As Single)
+    Dim i As Long, n As Long, start As Long, t As Single, f As Single
+    Dim phase As Double, env As Single
+    Const ATTACK = .006
+    start = Int(delay * SND_RATE)
+    n = Int(length * SND_RATE)
+    For i = 0 To n - 1
+        If start + i > UBound(buf) Then Exit For
+        t = i / SND_RATE
+        f = f1 + (f2 - f1) * (i / n) ' linear glide
+        phase = phase + 6.283185307 * f / SND_RATE
+        If t < ATTACK Then env = t / ATTACK Else env = Exp(-5 * (t - ATTACK) / length)
+        env = env * (1 - i / n) ' reach silence exactly at the end, no click
+        buf(start + i) = buf(start + i) + Sin(phase) * env * vol
+    Next
+End Sub
+
+' 16-bit mono WAV.
+Sub sndSaveWav (buf() As Single, fileName As String)
+    Dim i As Long, v As Long, d As String, h As String, ff As Long
+    For i = 0 To UBound(buf)
+        v = buf(i) * 32767
+        If v > 32767 Then v = 32767
+        If v < -32768 Then v = -32768
+        d = d + MKI$(v)
+    Next
+    h = "RIFF" + MKL$(36 + Len(d)) + "WAVE"
+    h = h + "fmt " + MKL$(16) + MKI$(1) + MKI$(1) + MKL$(SND_RATE) + MKL$(SND_RATE * 2) + MKI$(2) + MKI$(16)
+    h = h + "data" + MKL$(Len(d))
+    ff = FreeFile
+    Open fileName For Binary As #ff
+    Put #ff, , h
+    Put #ff, , d
+    Close #ff
+End Sub
+$End If
 
 ' Native builds read sfx/ next to the program. In the browser (QBJS) the
 ' files come from the project if they were added to it, otherwise from the
