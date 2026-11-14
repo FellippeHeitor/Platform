@@ -13,7 +13,9 @@ learn it by dying, and the game shows how far you got.
 
 Controls: **Space / mouse button / touch** jump · **R** restart attempt ·
 **M** mute · **Esc** back to the title (Esc on the title quits). On the
-title screen, **Left/Right** pick a level.
+title screen, **Left/Right** pick a level (any level you've already played)
+and **F** toggles free move (walk with the arrows, Space jumps, Up enters
+portals).
 
 Runs in **QB64-PE** and in **QBJS** from the same source (no QBJS-only
 code). Build natively from the QB64-PE folder:
@@ -30,18 +32,39 @@ code). Build natively from the QB64-PE folder:
   climbed automatically. Planks (`=`) can be jumped through from below.
 - Instant retry, death counter, progress bar with your best attempt marked,
   and the percentage reached on the death screen.
-- Ten levels. The first five each introduce something new: steps and gaps,
-  spikes and low ceilings, planks, diamonds (one extra air jump each) over
-  lava, and alternating spikes / switches and barriers / teleporters. The
-  last five are built around limited power-ups:
+- Instant retry, and a dotted line through the level where your previous
+  attempt ended, labelled with its percentage.
+- Eleven levels. The first five each introduce something new: steps and
+  gaps, spikes and low ceilings, planks, diamonds (one extra air jump each)
+  over lava, and alternating spikes / switches and barriers / teleporters.
+  Level 6, **Jungle Crossing**, is a nod to the jungle adventures of the
+  Atari 2600: swing across swamps on vines (you catch a vine by touching
+  its tip and let go with a press) and hop across crocodiles, past tar
+  pits. A croc's head, behind the eye, is always safe to stand on; its
+  snout only while the jaws are shut. Hang on a vine as long as you like:
+  the rest of the jungle only moves on as you gain new ground, so once
+  you're past where you were, everything is timed as if you'd run straight
+  there. The last five are built around
+  limited power-ups:
   - **Jetpack**: hold to thrust upward; taps burn less fuel than holds. Fuel
     is limited (a gauge shows what's left) and **fuel cans** top it up. When
     it's empty you drop.
   - **Wings**: unlimited air jumps for 2.5 seconds (a bar shows the time).
   - Every pickup (diamonds, fuel cans, jetpack, wings) can be collected once
     per attempt and disappears when taken.
-- Four themes with parallax hills, clouds, water, particles, a pixel-art
+- Five themes (the jungle has trees instead of hills) with parallax hills, clouds, water, particles, a pixel-art
   hero with squash and stretch, and soft sound effects.
+
+### Progress
+
+Levels you've played and your best percentage on each are kept in
+`leapline.log` next to the game, one `name|best` line per level; only
+those levels can be picked on the title screen. Delete the file to start
+over. In QBJS it lasts only as long as the page.
+
+If you've already beaten some levels (say on another computer), run
+`./mrJumpS -beaten 5` once to mark levels 1 to 5 as beaten and unlock
+level 6. Anything else already in the log is kept.
 
 ### Sounds
 

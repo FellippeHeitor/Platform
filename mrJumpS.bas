@@ -41,6 +41,8 @@ Const T_WINGS = 14
 Const T_NORMAL = 15
 Const T_GOAL = 16
 Const T_FUEL = 17
+Const T_CROC = 18 ' crocodile, two tiles: the head (right) is always safe, the snout only while shut
+Const T_VINE = 19 ' where a swinging vine hangs from
 
 ' hero modes
 Const MODE_RUN = 0
@@ -69,6 +71,15 @@ Const MAX_GEMS = 30 ' one-time pickups (diamonds, fuel cans, power-ups) per leve
 Const JET_FUEL = 150 ' ticks of thrust in a fresh jetpack (2.5 s held)
 Const FUEL_CAN = 75 ' ticks of thrust added by a fuel can
 Const WING_TICKS = 150 ' how long wings last (2.5 s)
+Const VINE_LEN = 150 ' vine length, pixels
+Const VINE_AMP = 0.7 ' swing amplitude, radians
+Const VINE_PERIOD = 150 ' ticks per full swing (all vines swing together)
+Const VINE_COOL = 15 ' ticks after letting go before a vine can be caught again
+Const MAX_VINES = 20
+Const CROC_PERIOD = 120 ' crocodiles snap together: jaws shut, then open
+Const CROC_OPEN_AT = 80 ' jaws dangerous from this tick of the cycle on
+Const BOUGH_X = 34, BOUGH_Y = 192 ' where a vine's anchor is in its branch sprite
+' (tall enough that the branch starts above the screen for anchors down to row 7)
 
 ' death causes
 Const DIE_NONE = 0
@@ -76,6 +87,7 @@ Const DIE_CRASH = 1
 Const DIE_SPIKE = 2
 Const DIE_LAVA = 3
 Const DIE_WATER = 4
+Const DIE_CROC = 5
 
 ' simulation events, for effects and sound (bit flags)
 Const EV_JUMP = 1
@@ -90,8 +102,10 @@ Const EV_FUEL = 256
 Const EV_EMPTY = 512 ' jetpack out of fuel
 Const EV_WINGSOFF = 1024 ' wings worn off
 Const EV_DROP = 2048 ' landed with a jetpack, which drops it
+Const EV_GRAB = 4096 ' caught a vine
+Const EV_LETGO = 8192 ' let go of a vine
 
-' sound effects (files in sfx/, made by tools/make_sfx.bas)
+' sound effects (files in sfx/, see makeSoundIfMissing)
 Const SFX_JUMP = 1
 Const SFX_AIRJUMP = 2
 Const SFX_FLAP = 3
@@ -143,6 +157,11 @@ Type HeroState
     thrust As Long
     xv As Single ' free-move mode only
     facing As Long ' 1 right, -1 left
+    vine As Long ' vine being held (index into vineAX/vineAY), 0 = none
+    vineCool As Long ' ticks until a vine can be caught again
+    vineT As Long ' the held vine's own swing tick (it keeps swinging while the world waits)
+    clock As Single ' world time: what drives crocs, toggles and the other vines (see simStep)
+    back As Single ' how far behind the furthest point reached, in ticks of running
 End Type
 
 Type Theme
@@ -156,6 +175,7 @@ Type Theme
     water As _Unsigned Long
     stars As Long
     hotSea As Long
+    jungle As Long ' tree trunks instead of hills, tar instead of lava
 End Type
 
 Type Particle
@@ -183,6 +203,7 @@ ReDim Shared tiles(0, 0) As Long, gemIndex(0, 0) As Long
 ReDim Shared teleCol(0, 0) As Long, teleRow(0, 0) As Long
 Dim Shared startX As Single, startY As Single, goalX As Single, goalRow As Long
 Dim Shared hero As HeroState, simTick As Long, simEvents As Long
+Dim Shared worldTick As Long ' world time during the current simStep (see simStep)
 Dim Shared headless As Long
 ' power-up amounts; variables so the level checker can test smaller budgets
 Dim Shared jetFuelFull As Long, fuelCanAmt As Long, wingFull As Long
@@ -194,12 +215,13 @@ Dim Shared clearance As Single
 Dim Shared freeMove As Long, moveDir As Long, doorPress As Long
 
 ' presentation
-Dim Shared themes(0 To 3) As Theme, th As Theme
+Dim Shared themes(0 To 4) As Theme, th As Theme
 Dim Shared levelImg As Long, skyImg As Long, farImg As Long, nearImg As Long
 Const HERO_SQ = 7 ' squash steps per pose, -0.6 .. 0.6
 Dim Shared heroImg(0 To 9 * HERO_SQ - 1) As Long, sprPack As Long
 Dim Shared sprSpikeUp As Long, sprSpikeDown As Long, sprGem As Long, sprPortal As Long
 Dim Shared sprJet As Long, sprFlame As Long, sprWingsBody As Long, sprWingL As Long, sprWingR As Long
+Dim Shared sprCroc(0 To 2) As Long, sprLeaf As Long, sprClump As Long
 Dim Shared sprFoot As Long, sprSwitchOn As Long, sprSwitchOff As Long, sprBarrier As Long, sprFuel As Long, glow(1 To 6) As Long
 Dim Shared accR As Single, accG As Single, accB As Single, accA As Single
 Dim Shared polyX(1 To 8) As Single, polyY(1 To 8) As Single, polyN As Long, polyOrient As Single
@@ -215,6 +237,14 @@ Dim Shared popText As String, popHint As String, popLife As Long, popColor As _U
 Dim Shared teleT As Long, teleFromX As Single, teleFromY As Single
 Dim Shared teleCamFrom As Single, teleCamTo As Single
 Const TEXT_CACHE = 16
+' vines: anchor points (top of the rope) of the current level
+Dim Shared vineAX(1 To MAX_VINES) As Single, vineAY(1 To MAX_VINES) As Single, nVines As Long
+' where the previous attempt ended, shown as a dotted line (-1 = none)
+Dim Shared markX As Single, markPct As Long, deathX As Single, deathPending As Long
+' progress log: levels reached and best %, by level name (see loadProgress)
+Const PROGRESS_FILE = "leapline.log"
+ReDim Shared levelNames(1 To 1) As String
+Dim Shared progName(1 To 99) As String, progBest(1 To 99) As Long, progCount As Long
 Dim Shared textKey(1 To TEXT_CACHE) As String, textImg(1 To TEXT_CACHE) As Long, textNext As Long
 
 Randomize Timer
@@ -231,6 +261,8 @@ initThemes
 initHeroSprites
 initSprites
 loadSounds
+loadProgress
+seedProgress Command$
 titleLevel = 1
 loadLevel titleLevel
 gameState = ST_TITLE
@@ -271,9 +303,9 @@ Do
         Case 82, 114 ' R
             If gameState = ST_PLAY Or gameState = ST_DEAD Then resetAttempt
         Case 19200 ' left
-            If gameState = ST_TITLE And titleLevel > 1 Then titleLevel = titleLevel - 1: loadLevel titleLevel
+            If gameState = ST_TITLE Then pickLevel -1
         Case 19712 ' right
-            If gameState = ST_TITLE And titleLevel < levelCount Then titleLevel = titleLevel + 1: loadLevel titleLevel
+            If gameState = ST_TITLE Then pickLevel 1
     End Select
 
     now = Timer(.001)
@@ -300,13 +332,15 @@ Loop
 '=============================================================================
 ' LEVEL DATA
 '=============================================================================
-' Level data: count, then per level: name, theme, 18 rows (top to bottom).
+' Level data: count, then per level: name, theme (0 meadow, 1 dusk, 2 desert,
+' 3 night, 4 jungle), 18 rows (top to bottom).
 ' . empty  # ground  = plank (one-way)  ^ spike  v hanging spike  L lava
 ' * diamond (air jump)  F fuel can (+flaps for a jetpack)  T/t alternating spikes
 ' S switch  B barrier
 ' O teleporter  o teleporter exit  J jetpack  W wings  N back to normal
+' CC crocodile, two tiles (stand on its jaws while they're shut)  V vine hangs from here
 ' @ start  G goal
-Data 10
+Data 11
 Data "First Steps",0
 Data "......................................................................................................................................................................."
 Data "......................................................................................................................................................................."
@@ -402,6 +436,25 @@ Data ".............................................B........T..t......O..####...
 Data "...@............TT.......ttTT................B.....#######################......################..tt..TT............B...B.....G................."
 Data "################################################...#######################......################################################################"
 Data "################################################...#######################......################################################################"
+Data "Jungle Crossing",4
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "...........................................V..........................................................................V........................................................"
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "..............................................................................................................................................................................."
+Data "...@.......................................................................^^.............................^^.......................^..............^^...........G..............."
+Data "############LLL######..CC..CC..#######...........##############LL######################...CC..CC..###############LLLLLLLLLL################LLL#################################"
+Data "############LLL######..........#######...........##############LL######################...........###############LLLLLLLLLL################LLL#################################"
 Data "Lift Off",1
 Data "................##############################################################......................................................................"
 Data "........................##......##......##......##......##......##......##.........................................................................."
@@ -541,6 +594,8 @@ Sub updateGame (held As Long)
                     levelDeaths = levelDeaths + 1
                     lastPct = progressPct
                     If lastPct > bestPct(levelNum) Then bestPct(levelNum) = lastPct
+                    recordProgress levelNum
+                    deathX = hero.x + HERO_W / 2: deathPending = TRUE
                     deathCause = hero.cause
                     burst hero.x + HERO_W / 2, hero.y + HERO_H / 2, 40, _RGB32(255, 255, 255)
                     burst hero.x + HERO_W / 2, hero.y + HERO_H / 2, 20, _RGB32(230, 70, 70)
@@ -550,6 +605,7 @@ Sub updateGame (held As Long)
                     stateTicks = 0
                 ElseIf hero.won Then
                     bestPct(levelNum) = 100
+                    recordProgress levelNum
                     burst goalX, hero.y, 60, _RGB32(255, 230, 90)
                     sfx SFX_WIN
                     gameState = ST_WON
@@ -599,6 +655,9 @@ End Sub
 
 Sub resetAttempt
     attempt = attempt + 1
+    ' the attempt that just ended becomes the dotted line
+    If deathPending Then markX = deathX: markPct = lastPct: deathPending = FALSE
+    recordProgress levelNum ' playing a level unlocks it on the title screen
     initHero hero
     simTick = 0
     squash = 0
@@ -608,6 +667,113 @@ Sub resetAttempt
     stateTicks = 0
     gameState = ST_PLAY
 End Sub
+
+' Title screen: step to the next level you've already played.
+Sub pickLevel (dirn As Long)
+    Dim n As Long
+    n = titleLevel + dirn
+    Do While n >= 1 And n <= levelCount
+        If levelUnlocked(n) Then titleLevel = n: loadLevel n: Exit Sub
+        n = n + dirn
+    Loop
+End Sub
+
+Function unlockedCount&
+    Dim n As Long, k As Long
+    For n = 1 To levelCount
+        If levelUnlocked(n) Then k = k + 1
+    Next
+    unlockedCount& = k
+End Function
+
+Function levelUnlocked& (n As Long)
+    levelUnlocked& = (n = 1) Or (progIndex(levelNames(n)) > 0)
+End Function
+
+Function progIndex& (nm As String)
+    Dim i As Long
+    For i = 1 To progCount
+        If progName(i) = nm Then progIndex& = i: Exit Function
+    Next
+End Function
+
+' The progress log is a text file next to the game: one "name|best%" line
+' per level played. Levels are matched by name, so adding or reordering
+' levels keeps what you've earned. (In QBJS the file only lasts the session.)
+Sub loadProgress
+    Dim i As Long, ff As Long, ln As String, p As Long, n As Long, nm As String
+    ReDim levelNames(1 To levelCount) As String
+    For n = 1 To levelCount
+        levelNames(n) = levelNameOf(n)
+    Next
+    progCount = 0
+    If Not _FileExists(PROGRESS_FILE) Then Exit Sub
+    ff = FreeFile
+    Open PROGRESS_FILE For Input As #ff
+    Do While Not EOF(ff)
+        Line Input #ff, ln
+        p = InStr(ln, "|")
+        If p > 1 And progCount < 99 Then
+            progCount = progCount + 1
+            progName(progCount) = Left$(ln, p - 1)
+            progBest(progCount) = Val(Mid$(ln, p + 1))
+        End If
+    Loop
+    Close #ff
+    For n = 1 To levelCount
+        i = progIndex(levelNames(n))
+        If i > 0 Then bestPct(n) = progBest(i)
+    Next
+End Sub
+
+Sub recordProgress (n As Long)
+    Dim i As Long, ff As Long
+    If headless Then Exit Sub
+    i = progIndex(levelNames(n))
+    If i = 0 Then
+        If progCount >= 99 Then Exit Sub
+        progCount = progCount + 1: i = progCount
+        progName(i) = levelNames(n): progBest(i) = -1
+    End If
+    If progBest(i) = bestPct(n) Then Exit Sub ' nothing new to save
+    progBest(i) = bestPct(n)
+    ff = FreeFile
+    Open PROGRESS_FILE For Output As #ff
+    For i = 1 To progCount
+        Print #ff, progName(i) + "|" + LTrim$(Str$(progBest(i)))
+    Next
+    Close #ff
+End Sub
+
+' "-beaten N" on the command line marks levels 1 to N as beaten in the
+' progress log and unlocks level N + 1, as if they had been played through.
+' Other entries in the log are kept.
+Sub seedProgress (cmd As String)
+    Dim p As Long, k As Long, n As Long, a As String
+    p = InStr(LCase$(cmd), "-beaten")
+    If p = 0 Then Exit Sub
+    a = LTrim$(Mid$(cmd, p + 7)) ' "-beaten 5", "--beaten=5"
+    If Left$(a, 1) = "=" Then a = Mid$(a, 2)
+    k = Val(a)
+    If k > levelCount Then k = levelCount
+    For n = 1 To k
+        bestPct(n) = 100
+        recordProgress n
+    Next
+    If k >= 1 And k < levelCount Then recordProgress k + 1
+End Sub
+
+Function levelNameOf$ (n As Long)
+    Dim i As Long, r As Long, s As String
+    Restore
+    Read i
+    For i = 1 To n - 1
+        Read s, r
+        For r = 0 To ROWS - 1: Read s: Next
+    Next
+    Read s
+    levelNameOf$ = s
+End Function
 
 Function progressPct&
     Dim p As Single
@@ -648,6 +814,8 @@ Sub handleEvents
         spawnParticle cx - 6, by - 2, -.5 + (Rnd - .5) * .6, 1.5 + Rnd, 12, 2 + Rnd * 2, _RGBA32(255, 190, 90, 200)
     End If
     If simEvents And EV_LAND Then squash = .7: dust cx, by, 6
+    If simEvents And EV_GRAB Then squash = .4: sfx SFX_FLAP
+    If simEvents And EV_LETGO Then squash = -.5: sfx SFX_JUMP
     If simEvents And EV_GEM Then
         ring cx, hero.y, _RGB32(120, 230, 255): sfx SFX_GEM
         showPopup "+1 AIR JUMP", "press again in mid-air", _RGB32(120, 230, 255)
@@ -756,15 +924,55 @@ Sub initHero (h As HeroState)
     h.thrust = FALSE
     h.xv = 0
     h.facing = 1
+    h.vine = 0
+    h.vineCool = 0
+    h.vineT = 0
+    h.clock = 0
+    h.back = 0
 End Sub
 
+' One tick of the hero, plus the world clock. The world (crocs, toggles,
+' vines other than the one held) only moves on as the hero gains new ground:
+' running, one tick of world time per tick. Hanging on a vine for as long as
+' you like, or swinging back and forth, doesn't use any of it up, so once
+' you're past the furthest point you'd reached, everything is where it would
+' be had you run straight there, and what's ahead is down to timed jumps.
+' Without vines this is exactly one world tick per tick (= simTick).
 Sub simStep (h As HeroState, held As Long)
+    Dim x0 As Single, wasVine As Long
+    x0 = h.x: wasVine = h.vine
+    worldTick = Int(h.clock + .001) + 1
+    simMove h, held
+    If freeMove Or (wasVine = 0 And h.vine = 0 And h.back <= 0) Then
+        h.clock = h.clock + 1
+    Else
+        h.back = h.back - (h.x - x0) / RUN_SPEED
+        If h.back < 0 Then h.clock = h.clock - h.back: h.back = 0
+    End If
+End Sub
+
+Sub simMove (h As HeroState, held As Long)
     Dim pressed As Long, wasGrounded As Long, prevBottom As Single
     Dim i As Long, landY As Single, ceilY As Single
 
     pressed = held And Not h.heldPrev
     h.heldPrev = held
     If pressed Then h.buffer = BUFFER_TICKS
+    If h.vineCool > 0 Then h.vineCool = h.vineCool - 1
+
+    ' --- hanging on a vine: carried by it until the button is pressed
+    If h.vine > 0 Then
+        If pressed Then
+            letGoVine h
+            pressed = FALSE ' this press was for letting go, not a jump
+        Else
+            h.vineT = h.vineT + 1
+            hangOnVine h
+            touchTiles h
+            If h.x >= goalX Then h.won = TRUE
+            Exit Sub
+        End If
+    End If
 
     ' --- wings wear off
     If h.mode = MODE_WINGS Then
@@ -869,6 +1077,8 @@ Sub simStep (h As HeroState, held As Long)
 
     If h.mode = MODE_JET And h.y < 0 Then h.y = 0: h.yv = 0
 
+    If Not h.grounded Then catchVine h
+
     touchTiles h
     If Not h.alive Then Exit Sub
 
@@ -906,6 +1116,64 @@ Sub freeMoveStep (h As HeroState)
     h.xv = 0
 End Sub
 
+' Vines all swing together, so where a vine's tip is depends only on the
+' tick: angle = VINE_AMP * sin(2 pi tick / VINE_PERIOD). That's the world
+' tick, except for the vine being held, which goes on from where it was
+' caught at its own pace (hero.vineT).
+Function vineAngle! (tick As Long)
+    vineAngle! = VINE_AMP * Sin(6.2831853 * tick / VINE_PERIOD)
+End Function
+
+' (Two functions rather than a Sub with output parameters: QBJS passes
+' numbers to subs by value.)
+Function vineTipX! (v As Long, tick As Long)
+    vineTipX! = vineAX(v) + VINE_LEN * Sin(vineAngle(tick))
+End Function
+
+Function vineTipY! (v As Long, tick As Long)
+    vineTipY! = vineAY(v) + VINE_LEN * Cos(vineAngle(tick))
+End Function
+
+' The hero hangs from the tip by the hands.
+Sub hangOnVine (h As HeroState)
+    h.x = vineTipX(h.vine, h.vineT) - HERO_W / 2: h.y = vineTipY(h.vine, h.vineT) - 2
+    h.grounded = FALSE: h.coyote = 0: h.jumping = FALSE: h.buffer = 0
+    h.xv = 0
+End Sub
+
+' Let go: keep the vine's speed, plus a little hop.
+Sub letGoVine (h As HeroState)
+    h.yv = vineTipY(h.vine, h.vineT) - vineTipY(h.vine, h.vineT - 1) - 5
+    h.xv = vineTipX(h.vine, h.vineT) - vineTipX(h.vine, h.vineT - 1)
+    h.vine = 0
+    h.vineCool = VINE_COOL
+    h.buffer = 0
+    simEvents = simEvents Or EV_LETGO
+End Sub
+
+' Catch a vine whose tip is at the hero's hands.
+Sub catchVine (h As HeroState)
+    Dim v As Long, tx As Single, ty As Single
+    If h.vineCool > 0 Or nVines = 0 Then Exit Sub
+    For v = 1 To nVines
+        tx = vineTipX(v, worldTick): ty = vineTipY(v, worldTick)
+        If Abs(h.x + HERO_W / 2 - tx) < 16 Then
+            If h.y > ty - 18 And h.y < ty + 16 Then
+                h.vine = v
+                h.vineT = worldTick
+                hangOnVine h
+                simEvents = simEvents Or EV_GRAB
+                Exit Sub
+            End If
+        End If
+    Next
+End Sub
+
+' Crocodile jaws: shut (safe to stand on) for most of the cycle, then open.
+Function crocOpen& (tick As Long)
+    crocOpen& = (tick Mod CROC_PERIOD) >= CROC_OPEN_AT
+End Function
+
 Function tileAt& (c As Long, r As Long)
     If c < 0 Or c >= levelCols Or r < 0 Or r >= ROWS Then
         tileAt& = T_EMPTY
@@ -917,7 +1185,7 @@ End Function
 Function isSolid& (h As HeroState, c As Long, r As Long)
     Dim t As Long
     t = tileAt(c, r)
-    isSolid& = (t = T_GROUND) Or (t = T_LAVA)
+    isSolid& = (t = T_GROUND) Or (t = T_LAVA) Or (t = T_CROC)
     If t = T_BARRIER Then isSolid& = ((h.openMask And 2 ^ gemIndex(c, r)) = 0) ' tileAt said c, r is on the map
 End Function
 
@@ -969,7 +1237,7 @@ End Function
 
 Function toggleUp& (t As Long)
     Dim phase As Long
-    phase = (simTick \ TOGGLE_TICKS) Mod 2
+    phase = (worldTick \ TOGGLE_TICKS) Mod 2
     toggleUp& = (t = T_TOGGLEA And phase = 0) Or (t = T_TOGGLEB And phase = 1)
 End Function
 
@@ -984,10 +1252,18 @@ Sub touchTiles (h As HeroState)
     hx1 = h.x + 2 - clearance: hx2 = h.x + HERO_W - 2 + clearance
     hy1 = h.y + 2 - clearance: hy2 = h.y + HERO_H - 1 + clearance
     For c = Int(hx1 / TILE) To Int((hx2 - .01) / TILE)
-        For r = Int(hy1 / TILE) To Int((hy2 - .01) / TILE)
+        For r = Int(hy1 / TILE) To Int((hy2 + 10) / TILE) ' + 10: open jaws reach above the head
             t = tileAt(c, r)
             tx = c * TILE: ty = r * TILE
             Select Case t
+                Case T_CROC
+                    ' only the snout (the croc's left tile) bites; the head
+                    ' behind it is a safe spot, as in Pitfall
+                    If crocOpen(worldTick) And tileAt(c - 1, r) <> T_CROC Then
+                        If boxHit(hx1, hy1, hx2, hy2, tx, ty - 10, tx + TILE - 3, ty + TILE) Then
+                            h.alive = FALSE: h.cause = DIE_CROC: Exit Sub
+                        End If
+                    End If
                 Case T_SPIKE, T_TOGGLEA, T_TOGGLEB
                     If t = T_SPIKE Or toggleUp(t) Then
                         If boxHit(hx1, hy1, hx2, hy2, tx + 6, ty + 11, tx + TILE - 6, ty + TILE) Then
@@ -1100,6 +1376,8 @@ Sub loadLevel (n As Long)
     goalX = (levelCols - 10) * TILE
     startX = 2 * TILE: startY = 15 * TILE + TILE - HERO_H
     gems = 0
+    nVines = 0
+    markX = -1: deathPending = FALSE
 
     For r = 0 To ROWS - 1
         For c = 0 To levelCols - 1
@@ -1116,6 +1394,13 @@ Sub loadLevel (n As Long)
                     gems = gems + 1
                 Case "T": tiles(c, r) = T_TOGGLEA
                 Case "t": tiles(c, r) = T_TOGGLEB
+                Case "C": tiles(c, r) = T_CROC
+                Case "V"
+                    tiles(c, r) = T_VINE
+                    If nVines < MAX_VINES Then
+                        nVines = nVines + 1
+                        vineAX(nVines) = c * TILE + TILE / 2: vineAY(nVines) = r * TILE
+                    End If
                 Case "S": tiles(c, r) = T_SWITCH
                 Case "B": tiles(c, r) = T_BARRIER
                 Case "O": tiles(c, r) = T_TELEIN
@@ -1221,6 +1506,12 @@ Sub initThemes
     themes(3).ground = _RGB32(72, 82, 104): themes(3).groundDark = _RGB32(52, 58, 78)
     themes(3).grass = _RGB32(110, 206, 224): themes(3).water = _RGB32(22, 42, 96)
     themes(3).stars = TRUE
+    ' 4 jungle
+    themes(4).skyTop = _RGB32(34, 82, 56): themes(4).skyBottom = _RGB32(150, 196, 120)
+    themes(4).hillFar = _RGB32(56, 112, 66): themes(4).hillNear = _RGB32(34, 74, 44)
+    themes(4).ground = _RGB32(118, 86, 50): themes(4).groundDark = _RGB32(88, 62, 36)
+    themes(4).grass = _RGB32(74, 156, 54): themes(4).water = _RGB32(44, 96, 78)
+    themes(4).jungle = TRUE
 End Sub
 
 ' Hero frames, drawn smooth like the other sprites. Poses 0-5 run, 6 jump,
@@ -1395,6 +1686,51 @@ Function hash01! (a As Long, b As Long)
 End Function
 
 ' Triangle with its tip at (cx, peakY) and a flat base at baseY (either side).
+Sub fillCircle (cx As Single, cy As Single, r As Single, c As _Unsigned Long)
+    Dim y As Long, w As Single
+    For y = Int(cy - r) To Int(cy + r)
+        w = r * r - (y - cy) * (y - cy)
+        If w > 0 Then w = Sqr(w): Line (cx - w, y)-(cx + w, y), c
+    Next
+End Sub
+
+' Jungle backdrop: rows of tree trunks under a leafy canopy, in the same two
+' wrapping parallax strips the hills use (drawn at x, x - 2 screens and
+' x + 2 screens so the wrap is seamless).
+Sub bakeJungle
+    Dim i As Long, k As Long, x As Single, w As Single, img As Long, col As _Unsigned Long, dk As _Unsigned Long
+    For k = 0 To 1
+        img = _NewImage(SW * 2, SH, 32)
+        _Dest img
+        If k = 0 Then col = th.hillFar Else col = th.hillNear
+        dk = shade(col, .75)
+        For i = 0 To 11 + k * 4
+            x = i * SW * 2 / (12 + k * 4) + hash01(i, 21 + k) * 60
+            w = 10 + hash01(i, 23 + k) * 12 + k * 10
+            jungleTrunk x, w, col, dk
+            jungleTrunk x - SW * 2, w, col, dk
+            jungleTrunk x + SW * 2, w, col, dk
+        Next
+        ' canopy along the top
+        For i = 0 To 40
+            x = i * SW * 2 / 40
+            w = 30 + hash01(i, 31 + k) * 30 + k * 10
+            fillCircle x, 10 + k * 20 + hash01(i, 33 + k) * 40, w, shade(col, 1.15 - k * .1)
+            fillCircle x - SW * 2, 10 + k * 20 + hash01(i, 33 + k) * 40, w, shade(col, 1.15 - k * .1)
+            fillCircle x + SW * 2, 10 + k * 20 + hash01(i, 33 + k) * 40, w, shade(col, 1.15 - k * .1)
+        Next
+        If k = 0 Then farImg = img Else nearImg = img
+    Next
+    _Dest 0
+End Sub
+
+Sub jungleTrunk (x As Single, w As Single, col As _Unsigned Long, dk As _Unsigned Long)
+    Line (x, 0)-Step(w, SH), col, BF
+    Line (x + w * .65, 0)-Step(w * .35, SH), dk, BF
+    ' roots
+    fillTri x + w / 2, SH - 30, w * .9, SH, col
+End Sub
+
 Sub fillTri (cx As Single, peakY As Single, halfW As Single, baseY As Single, c As _Unsigned Long)
     Dim y As Long, w As Single, y1 As Long, y2 As Long
     If baseY >= peakY Then y1 = Int(peakY): y2 = Int(baseY) Else y1 = Int(baseY): y2 = Int(peakY)
@@ -1407,7 +1743,7 @@ End Sub
 Sub bakeBackground
     Dim y As Long, i As Long, x As Single, h As Single, w As Single
 
-    If skyImg < -1 Then _FreeImage skyImg
+    If skyImg <> 0 Then _FreeImage skyImg
     skyImg = _NewImage(SW, SH, 32)
     _Dest skyImg
     For y = 0 To SH - 1
@@ -1419,8 +1755,15 @@ Sub bakeBackground
         Next
     End If
 
+    If th.jungle Then
+        If farImg <> 0 Then _FreeImage farImg
+        If nearImg <> 0 Then _FreeImage nearImg
+        bakeJungle
+        Exit Sub
+    End If
+
     ' hill strips are 2 screens wide and wrap seamlessly
-    If farImg < -1 Then _FreeImage farImg
+    If farImg <> 0 Then _FreeImage farImg
     farImg = _NewImage(SW * 2, SH, 32)
     _Dest farImg
     For i = 0 To 9
@@ -1431,7 +1774,7 @@ Sub bakeBackground
         fillTri x + SW * 2, SH - h - 40, w, SH, th.hillFar
         fillTri x - SW * 2, SH - h - 40, w, SH, th.hillFar
     Next
-    If nearImg < -1 Then _FreeImage nearImg
+    If nearImg <> 0 Then _FreeImage nearImg
     nearImg = _NewImage(SW * 2, SH, 32)
     _Dest nearImg
     For i = 0 To 13
@@ -1459,7 +1802,7 @@ End Sub
 Sub bakeLevel
     Dim c As Long, r As Long, t As Long, x As Long, y As Long, i As Long
 
-    If levelImg < -1 Then _FreeImage levelImg
+    If levelImg <> 0 Then _FreeImage levelImg
     levelImg = _NewImage(levelCols * TILE, SH, 32)
     rawWrites levelImg, TRUE
     _Dest levelImg
@@ -1490,9 +1833,17 @@ Sub bakeLevel
                 Case T_SPIKEDOWN
                     _PutImage (x, y), sprSpikeDown
                 Case T_LAVA
-                    Line (x, y)-Step(TILE - 1, TILE - 1), _RGB32(214, 64, 30), BF
-                    Line (x, y + 3 + hash01(c, r) * 4)-Step(TILE - 1, 3), _RGB32(255, 168, 48), BF
-                    If tileAt(c, r - 1) <> T_LAVA Then Line (x, y)-Step(TILE - 1, 2), _RGB32(255, 220, 120), BF
+                    If th.jungle Then ' tar pit
+                        Line (x, y)-Step(TILE - 1, TILE - 1), _RGB32(34, 30, 36), BF
+                        If tileAt(c, r - 1) <> T_LAVA Then
+                            Line (x, y)-Step(TILE - 1, 2), _RGB32(86, 80, 92), BF
+                            Line (x + 4 + hash01(c, r) * 12, y + 5)-Step(3, 2), _RGB32(70, 64, 76), BF
+                        End If
+                    Else
+                        Line (x, y)-Step(TILE - 1, TILE - 1), _RGB32(214, 64, 30), BF
+                        Line (x, y + 3 + hash01(c, r) * 4)-Step(TILE - 1, 3), _RGB32(255, 168, 48), BF
+                        If tileAt(c, r - 1) <> T_LAVA Then Line (x, y)-Step(TILE - 1, 2), _RGB32(255, 220, 120), BF
+                    End If
             End Select
         Next
     Next
@@ -1512,7 +1863,9 @@ Sub render
     drawClouds cx
     drawParallax nearImg, cx * .45
     _PutImage (ox, oy)-(ox + SW - 1, oy + SH - 1), levelImg, 0, (cx, 0)-(cx + SW - 1, SH - 1)
+    drawVines cx - ox, oy
     drawDynamicTiles cx - ox, oy
+    If gameState = ST_PLAY Or gameState = ST_DEAD Then drawAttemptMark cx - ox, oy
     If gameState <> ST_TITLE And hero.alive Then
         If teleT > 0 Then
             p = teleProgress
@@ -1560,6 +1913,7 @@ End Sub
 
 Sub drawClouds (cx As Long)
     Dim i As Long, x As Single, w As Single
+    If th.jungle Then Exit Sub ' no sky to see under the canopy
     For i = 1 To 8
         x = clouds(i).x - cx * .3
         x = x - Int(x / (SW * 2)) * SW * 2 - 200
@@ -1608,6 +1962,9 @@ Sub drawDynamicTiles (cx As Long, oy As Long)
                         End If
                     Case T_TOGGLEA, T_TOGGLEB
                         drawToggleSpike x, y, t
+                    Case T_CROC
+                        ' one sprite per croc, drawn from its left tile
+                        If tileAt(c - 1, r) <> T_CROC Then _PutImage (x - 2, y - 20), sprCroc(crocFrame)
                     Case T_SWITCH
                         If (hero.openMask And 2 ^ gemIndex(c, r)) = 0 Or gameState = ST_TITLE Then
                             p = 1 + Sin(frameCount / 9) * .1
@@ -1662,6 +2019,60 @@ Sub drawModeOrb (x As Single, y As Single, t As Long)
     End Select
 End Sub
 
+' Jaws start opening a little before they're dangerous and finish shutting
+' after they're safe again, so they never look safer than they are.
+Function crocFrame&
+    Dim ph As Long
+    ph = Int(hero.clock + .001) Mod CROC_PERIOD
+    If ph >= CROC_OPEN_AT Then
+        crocFrame& = 2
+    ElseIf ph >= CROC_OPEN_AT - 10 Or ph < 6 Then
+        crocFrame& = 1
+    Else
+        crocFrame& = 0
+    End If
+End Function
+
+' Vines: a rope from the anchor to the tip, a few leaves, and the branch.
+Sub drawVines (cx As Long, oy As Long)
+    Dim v As Long, tx As Single, ty As Single, ax As Single, ay As Single, i As Long, f As Single
+    Dim lx As Single, ly As Single, k As Long
+    For v = 1 To nVines
+        ax = vineAX(v) - cx: ay = vineAY(v) + oy
+        If ax > -200 And ax < SW + 200 Then
+            k = Int(hero.clock + .001)
+            If v = hero.vine Then k = hero.vineT
+            tx = vineTipX(v, k) - cx: ty = vineTipY(v, k) + oy
+            Line (ax - 1, ay)-(tx - 1, ty), _RGB32(60, 84, 30)
+            Line (ax, ay)-(tx, ty), _RGB32(96, 128, 44)
+            Line (ax + 1, ay)-(tx + 1, ty), _RGB32(76, 104, 36)
+            For i = 1 To 4
+                f = i / 5
+                lx = ax + (tx - ax) * f: ly = ay + (ty - ay) * f
+                If i Mod 2 = 0 Then
+                    _PutImage (lx, ly - 4), sprLeaf
+                Else
+                    _PutImage (lx, ly - 4)-(lx - 11, ly + 3), sprLeaf
+                End If
+            Next
+            _PutImage (ax - BOUGH_X, ay - BOUGH_Y), sprClump
+        End If
+    Next
+End Sub
+
+' Dotted line where the previous attempt ended, with its percentage.
+Sub drawAttemptMark (cx As Long, oy As Long)
+    Dim x As Single, y As Long, s As String
+    If markX < 0 Then Exit Sub
+    x = Int(markX - cx)
+    If x < -40 Or x > SW + 40 Then Exit Sub
+    For y = 30 To SH - 1 Step 10
+        Line (x, y + oy)-Step(1, 5), _RGBA32(255, 255, 255, 150), BF
+    Next
+    s = LTrim$(Str$(markPct)) + "%"
+    textAt s, x - _PrintWidth(s) / 2, 30 - 16 + oy, _RGBA32(255, 255, 255, 200)
+End Sub
+
 ' Toggle spikes slide: they rise just before they become dangerous and sink
 ' just after they stop being dangerous, so what you see is never safer than
 ' what the physics does.
@@ -1677,7 +2088,7 @@ Function toggleVisual! (t As Long)
     Const MOVE = 8
     Dim ph As Long, rel As Long, period As Long
     period = TOGGLE_TICKS * 2
-    ph = simTick Mod period
+    ph = Int(hero.clock + .001) Mod period
     If t = T_TOGGLEA Then rel = ph Else rel = (ph + TOGGLE_TICKS) Mod period
     If rel < TOGGLE_TICKS Then
         toggleVisual! = 1 ' dangerous
@@ -1745,7 +2156,9 @@ Sub drawHero (cx As Long, oy As Long, vis As Single)
         End If
     Next
 
-    If hero.grounded Then
+    If hero.vine > 0 Then
+        f = 6 ' hanging on: arms-up pose
+    ElseIf hero.grounded Then
         If gameState <> ST_PLAY Then
             f = 8
         ElseIf freeMove Then
@@ -1860,6 +2273,13 @@ End Sub
 '=============================================================================
 
 Sub initSprites
+    Dim k As Long
+    For k = 0 To 2
+        sprCroc(k) = makeCroc(k / 2)
+        rawWrites sprCroc(k), FALSE
+    Next
+    sprLeaf = makeLeaf: rawWrites sprLeaf, FALSE
+    sprClump = makeClump: rawWrites sprClump, FALSE
     sprSpikeUp = makeSpike(FALSE)
     sprSpikeDown = makeSpike(TRUE)
     sprGem = makeGem
@@ -2150,6 +2570,172 @@ Function makeJetOrb&
     Next
     _Dest 0
     makeJetOrb& = img
+End Function
+
+' Crocodile head, two tiles long (CC in the level), snout to the left: only
+' the jaws are above the water, the neck goes straight down, so what looks
+' like something to stand on is exactly the solid part. The tiles are at
+' x 2..51 of the image and their top (where the hero stands) at y 20; the
+' 8 rows above the drawing coordinates leave room for the snout to open.
+' The head (right tile, with the eye) never moves: it's a safe spot. The
+' snout (left tile) opens at a hinge on the tile boundary.
+' openAmt 0 = jaws shut, 1 = wide open.
+Function makeCroc& (openAmt As Single)
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single, d2 As Single
+    Dim ux As Single, uy As Single, ang As Single, ca As Single, sa As Single, i As Long
+    Dim ink As _Unsigned Long, grn As _Unsigned Long, lit As _Unsigned Long, belly As _Unsigned Long
+    Dim tipX As Single, tipY As Single, top As Single
+    Const HX = 28, HY = 21 ' snout hinge, where the snout meets the head
+    ink = _RGB32(22, 50, 30): grn = _RGB32(68, 140, 64): lit = _RGB32(120, 184, 92): belly = _RGB32(178, 204, 120)
+    ' (ux, uy) below maps a pixel into the upper snout's own frame, so a
+    ' negative sa turns the drawn snout tip-up
+    ang = .5 * openAmt
+    ca = Cos(-ang): sa = Sin(-ang)
+    ' where the upper snout's tip ends up, for the inside of the mouth
+    tipX = HX + (4 - HX) * ca + (20.8 - HY) * sa
+    tipY = HY - (4 - HX) * sa + (20.8 - HY) * ca
+    img = newSprite(56, 60)
+    For py = 0 To 59
+        For px = 0 To 55
+            X = px + .5: Y = py + .5 - 8
+            ux = HX + (X - HX) * ca - (Y - HY) * sa
+            uy = HY + (X - HX) * sa + (Y - HY) * ca
+            pxBegin
+            ' neck, going down into the water, in shadow under the head
+            d = sdBox(X, Y, 40, 40, 9, 16, 6)
+            pxLayer ink, cov(d): pxLayer mixColor(grn, _RGB32(30, 70, 40), (Y - 24) / 20), cov(d + 1.2)
+            ' inside of the mouth, seen when open
+            If openAmt > 0 Then
+                setPoly3 HX + 1, HY, 4, 21.5, tipX, tipY
+                d = sdPoly(X, Y)
+                pxLayer _RGB32(120, 30, 50), cov(d): pxLayer _RGB32(222, 96, 110), cov(d + 1)
+            End If
+            ' lower jaw, the full length
+            d = sdBox(X, Y, 27, 23.5, 24, 3.2, 2.8)
+            pxLayer ink, cov(d): pxLayer belly, cov(d + 1.1)
+            For i = 0 To 5 ' lower teeth
+                setPoly3 5.5 + i * 4.3, 21, 8.5 + i * 4.3, 21, 7 + i * 4.3, 18.6 - openAmt
+                pxLayer _RGB32(250, 250, 236), cov(sdPoly(X, Y))
+            Next
+            ' head (still) and upper snout (rotated) as one shape, so there's
+            ' no seam between them while shut
+            ' (each runs into the other, so neither's rounded end shows at the
+            ' joint; past the hinge the snout dips down inside the head)
+            d = sdBox(X, Y, 38, 16.6, 14, 4.8, 4)
+            d2 = sdBox(ux, uy, 20, 16.6, 16, 4.8, 4)
+            If d2 < d Then d = d2: top = uy Else top = Y
+            pxLayer ink, cov(d): pxLayer mixColor(lit, grn, (top - 12) / 8), cov(d + 1.1)
+            For i = 0 To 5 ' upper teeth
+                setPoly3 4 + i * 4.3, 20.8, 7 + i * 4.3, 20.8, 5.5 + i * 4.3, 23.4
+                pxLayer _RGB32(250, 250, 236), cov(sdPoly(ux, uy))
+            Next
+            For i = 0 To 2 ' scales along the top of the snout
+                pxLayer _RGBA32(22, 50, 30, 90), cov(sdCircle(ux, uy, 12 + i * 6, 14, 1))
+            Next
+            pxLayer _RGBA32(22, 50, 30, 90), cov(sdCircle(X, Y, 32, 14, 1))
+            d = sdCircle(ux, uy, 5, 12.8, 1.8) ' nostril bump
+            pxLayer ink, cov(d): pxLayer lit, cov(d + 1)
+            ' eye bump on the head
+            d = sdCircle(X, Y, 42, 11.5, 3.8)
+            pxLayer ink, cov(d): pxLayer _RGB32(242, 214, 80), cov(d + 1)
+            pxLayer ink, cov(sdBox(X, Y, 42.5, 11.5, .7, 2.3, .5))
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeCroc& = img
+End Function
+
+' A leaf for the vines.
+Function makeLeaf&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single
+    img = newSprite(12, 8)
+    For py = 0 To 7
+        For px = 0 To 11
+            X = px + .5: Y = py + .5
+            pxBegin
+            d = sdFeather(X, Y, .5, 4, 0, 11, 3.3)
+            pxLayer _RGB32(30, 76, 30), cov(d)
+            pxLayer mixColor(_RGB32(120, 200, 80), _RGB32(56, 130, 48), Y / 8), cov(d + 1)
+            pxLayer _RGBA32(30, 76, 30, 160), cov(Abs(Y - 4) - .4) * cov(d + 1.5)
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeLeaf& = img
+End Function
+
+' The leafy branch a vine hangs from.
+' The branch a vine hangs from: a bough coming down out of the canopy
+' (above the top of the screen) to a knot at the anchor, with a cluster of
+' leaves at the knot and more up where it meets the canopy. The anchor is
+' at (BOUGH_X, BOUGH_Y) in the image.
+Function makeClump&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single, i As Long
+    Dim t As Single, w As Single, cx As Single, cy As Single, ang As Single, nl As Long
+    Dim lx(1 To 48) As Single, ly(1 To 48) As Single, la(1 To 48) As Single, ll(1 To 48) As Single
+    Dim lc(1 To 48) As _Unsigned Long
+    Dim ink As _Unsigned Long, bark As _Unsigned Long, barkLit As _Unsigned Long
+    ink = _RGB32(20, 44, 24): bark = _RGB32(84, 58, 36): barkLit = _RGB32(132, 98, 62)
+    nl = 48
+    For i = 1 To nl
+        If i <= 16 Then ' around the knot, leaving the anchor itself clear
+            cx = BOUGH_X + 4: cy = BOUGH_Y - 10
+            ang = (i / 16) * 6.283 + hash01(i, 61) * .5
+            If Sin(ang) > .55 Then ang = ang + 1.6
+            lx(i) = cx + Cos(ang) * 4: ly(i) = cy + Sin(ang) * 3
+            ll(i) = 11 + hash01(i, 63) * 5
+        ElseIf i <= 40 Then ' up where the bough meets the canopy, hanging down
+            cy = 66 + hash01(i, 67) * 50
+            lx(i) = boughX(cy) + (hash01(i, 65) - .5) * 44: ly(i) = cy
+            ang = 1.57 + (hash01(i, 69) - .5) * 3.2
+            ll(i) = 13 + hash01(i, 71) * 7
+        Else ' pairs along the middle of the bough
+            cy = 125 + (i - 41) * 7
+            lx(i) = boughX(cy): ly(i) = cy
+            If i Mod 2 Then ang = .5 + hash01(i, 69) * .5 Else ang = 2.6 - hash01(i, 69) * .5
+            ll(i) = 10 + hash01(i, 71) * 4
+        End If
+        la(i) = ang
+        lc(i) = mixColor(_RGB32(46, 110, 44), _RGB32(104, 178, 74), hash01(i, 73) * .6 + (i Mod 3) * .2)
+    Next
+    img = newSprite(110, 200)
+    For py = 0 To 199
+        For px = 0 To 109
+            X = px + .5: Y = py + .5
+            pxBegin
+            ' the bough, tapering from the canopy down to the knot
+            If Y <= BOUGH_Y + 2 Then
+                cx = boughX(Y): w = 8 - 4 * Y / BOUGH_Y
+                d = Abs(X - cx) - w
+                If Y > BOUGH_Y - 2 Then d = sdCircle(X, Y, BOUGH_X, BOUGH_Y - 2, 4.5) ' the knot
+                pxLayer ink, cov(d)
+                pxLayer mixColor(barkLit, bark, (X - cx + w) / (2 * w)), cov(d + 1.2)
+            End If
+            For i = 1 To nl
+                d = sdFeather(X, Y, lx(i), ly(i), la(i), ll(i), 3.6)
+                If d < 2 Then
+                    pxLayer ink, cov(d)
+                    pxLayer lc(i), cov(d + 1)
+                    ' midrib
+                    pxLayer _RGBA32(30, 70, 34, 110), cov(Abs(sdFeather(X, Y, lx(i), ly(i), la(i), ll(i), .6)) - .1)
+                End If
+            Next
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeClump& = img
+End Function
+
+' Centre line of the vine branch at height y of its sprite: it leans in from
+' the right and bends a little on the way down to the knot.
+Function boughX! (y As Single)
+    Dim t As Single
+    t = y / BOUGH_Y
+    If t < 0 Then t = 0
+    If t > 1 Then t = 1
+    boughX! = 80 + (BOUGH_X - 80) * t + Sin(t * 3.1416) * 10
 End Function
 
 ' Teardrop flame, yellow at the top fading to orange.
@@ -2511,6 +3097,7 @@ Sub drawTitle
     centerText "Tap to hop, hold to jump higher. Don't stop, don't fall.", 175, _RGB32(255, 255, 255)
     centerText "<  " + levelLabel(titleLevel) + "  >", 250, _RGB32(255, 230, 120)
     If bestPct(titleLevel) > 0 Then centerText "best:" + Str$(bestPct(titleLevel)) + "%", 272, _RGB32(255, 255, 255)
+    If levelCount > 1 Then centerText "levels played:" + Str$(unlockedCount) + " of" + Str$(levelCount), 292, _RGBA32(255, 255, 255, 160)
     If (frameCount \ 30) Mod 2 = 0 Then centerText "SPACE / click / tap to play", 320, _RGB32(255, 255, 255)
     If freeMove Then
         centerText "F free move: ON  (arrows / A D walk, SPACE jump, up / W enter portals)", 360, _RGB32(150, 250, 170)
@@ -2527,7 +3114,9 @@ Sub drawDeadScreen
     Select Case deathCause
         Case DIE_CRASH: s = "Bonk! Hit a wall."
         Case DIE_SPIKE: s = "Ouch! Spikes."
-        Case DIE_LAVA: s = "Too hot!"
+        Case DIE_LAVA
+            If th.jungle Then s = "Stuck in the tar!" Else s = "Too hot!"
+        Case DIE_CROC: s = "Chomp! Wait for the jaws to shut, or stand on the head."
         Case DIE_WATER
             If th.hotSea Then s = "Too hot!" Else s = "Splash!"
     End Select
