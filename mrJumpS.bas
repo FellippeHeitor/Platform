@@ -133,7 +133,7 @@ Type HeroState
     buffer As Long
     heldPrev As Long
     jumping As Long
-    barriersOn As Long
+    openMask As Long ' bit n set = switch n pressed, its barriers open
     gemMask As Long
     alive As Long
     won As Long
@@ -141,6 +141,8 @@ Type HeroState
     fuel As Long
     wingTicks As Long
     thrust As Long
+    xv As Single ' free-move mode only
+    facing As Long ' 1 right, -1 left
 End Type
 
 Type Theme
@@ -187,6 +189,9 @@ Dim Shared jetFuelFull As Long, fuelCanAmt As Long, wingFull As Long
 ' extra pixels around the hero for walls, ceilings and hazards; always 0 in
 ' the game, the level checker raises it to measure how much room a level has
 Dim Shared clearance As Single
+' free-move mode (F on the title): walk left/right yourself, walls only block.
+' A toy for playing around; the levels are designed for auto-running.
+Dim Shared freeMove As Long, moveDir As Long, doorPress As Long
 
 ' presentation
 Dim Shared themes(0 To 3) As Theme, th As Theme
@@ -227,7 +232,7 @@ titleLevel = 1
 loadLevel titleLevel
 gameState = ST_TITLE
 
-Dim held As Long, heldFrame As Long, pressLatch As Long, k As Long
+Dim held As Long, heldFrame As Long, pressLatch As Long, k As Long, upPrev As Long, doorLatch As Long
 Dim lastTime As Double, now As Double, acc As Double, dt As Double
 lastTime = Timer(.001)
 
@@ -236,6 +241,18 @@ Do
     ' starts and ends between two physics ticks is still seen.
     While _MouseInput: Wend
     heldFrame = (_MouseButton(1) <> 0) Or _KeyDown(32)
+    moveDir = 0
+    If freeMove Then
+        ' up / W: enter a portal (latched, like jump presses)
+        If _KeyDown(18432) Or _KeyDown(119) Or _KeyDown(87) Then
+            If Not upPrev Then doorLatch = TRUE
+            upPrev = TRUE
+        Else
+            upPrev = FALSE
+        End If
+        If _KeyDown(19200) Or _KeyDown(97) Or _KeyDown(65) Then moveDir = moveDir - 1
+        If _KeyDown(19712) Or _KeyDown(100) Or _KeyDown(68) Then moveDir = moveDir + 1
+    End If
     If heldFrame Then pressLatch = TRUE
 
     k = _KeyHit
@@ -244,6 +261,8 @@ Do
             If gameState = ST_TITLE Then System
             gameState = ST_TITLE
             loadLevel titleLevel
+        Case 70, 102 ' F
+            If gameState = ST_TITLE Then freeMove = Not freeMove
         Case 77, 109 ' M
             muted = Not muted
         Case 82, 114 ' R
@@ -264,7 +283,9 @@ Do
     Do While acc >= STEP_DT
         held = heldFrame Or pressLatch
         pressLatch = FALSE
+        doorPress = doorLatch: doorLatch = FALSE
         updateGame held
+        doorPress = FALSE
         acc = acc - STEP_DT
     Loop
 
@@ -508,7 +529,9 @@ Sub updateGame (held As Long)
                 simEvents = 0
                 simStep hero, held
                 handleEvents
-                If simEvents And EV_TELEPORT Then startTeleport prevX + RUN_SPEED, prevY
+                If simEvents And EV_TELEPORT Then
+                    If freeMove Then startTeleport prevX + hero.xv, prevY Else startTeleport prevX + RUN_SPEED, prevY
+                End If
                 If popLife > 0 Then popLife = popLife - 1
                 If Not hero.alive Then
                     deathsTotal = deathsTotal + 1
@@ -578,8 +601,7 @@ Sub resetAttempt
     squash = 0
     teleT = 0
     popLife = 0
-    camX = 0
-    followCamera
+    camX = cameraTarget
     stateTicks = 0
     gameState = ST_PLAY
 End Sub
@@ -593,10 +615,24 @@ Function progressPct&
 End Function
 
 Sub followCamera
-    camX = hero.x - SW * .28
-    If camX < 0 Then camX = 0
-    If camX > levelCols * TILE - SW Then camX = levelCols * TILE - SW
+    If freeMove And gameState = ST_PLAY And stateTicks > 0 Then
+        camX = camX + (cameraTarget - camX) * .1
+    Else
+        camX = cameraTarget
+    End If
 End Sub
+
+Function cameraTarget!
+    Dim t As Single
+    If freeMove Then
+        t = hero.x + HERO_W / 2 - SW / 2 + hero.facing * 90
+    Else
+        t = hero.x - SW * .28
+    End If
+    If t > levelCols * TILE - SW Then t = levelCols * TILE - SW
+    If t < 0 Then t = 0
+    cameraTarget! = t
+End Function
 
 Sub handleEvents
     Dim cx As Single, by As Single
@@ -663,9 +699,7 @@ Sub startTeleport (fromX As Single, fromY As Single)
     teleT = TELE_TICKS
     teleFromX = fromX: teleFromY = fromY
     teleCamFrom = camX
-    followCamera
-    teleCamTo = camX
-    camX = teleCamFrom
+    teleCamTo = cameraTarget
     ring fromX + HERO_W / 2, fromY + HERO_H / 2, _RGB32(220, 120, 255)
     sfx SFX_TELEPORT
 End Sub
@@ -709,7 +743,7 @@ Sub initHero (h As HeroState)
     h.buffer = 0
     h.heldPrev = TRUE ' the press that started this attempt must not also jump
     h.jumping = FALSE
-    h.barriersOn = TRUE
+    h.openMask = 0
     h.gemMask = 0
     h.alive = TRUE
     h.won = FALSE
@@ -717,6 +751,8 @@ Sub initHero (h As HeroState)
     h.fuel = 0
     h.wingTicks = 0
     h.thrust = FALSE
+    h.xv = 0
+    h.facing = 1
 End Sub
 
 Sub simStep (h As HeroState, held As Long)
@@ -778,8 +814,13 @@ Sub simStep (h As HeroState, held As Long)
 
     ' --- horizontal: always running. Hitting a wall is fatal, but small
     ' ledges (STEP_TOL pixels) are climbed automatically.
-    h.x = h.x + RUN_SPEED
-    If overlapsSolid(h, h.x, h.y) Then
+    If freeMove Then
+        freeMoveStep h
+        If Not h.alive Then Exit Sub
+    Else
+        h.x = h.x + RUN_SPEED
+    End If
+    If Not freeMove And overlapsSolid(h, h.x, h.y) Then
         For i = 1 To STEP_TOL
             If Not overlapsSolid(h, h.x, h.y - i) Then Exit For
         Next
@@ -832,6 +873,36 @@ Sub simStep (h As HeroState, held As Long)
     If h.x >= goalX Then h.won = TRUE
 End Sub
 
+' Walking under player control: ease towards the wanted speed, climb small
+' ledges, stop at walls (lava walls still burn).
+Sub freeMoveStep (h As HeroState)
+    Dim target As Single, nx As Single, i As Long, dirn As Long
+    target = moveDir * RUN_SPEED
+    If moveDir <> 0 Then h.facing = moveDir
+    If h.grounded Then
+        h.xv = h.xv + (target - h.xv) * .35
+    Else
+        h.xv = h.xv + (target - h.xv) * .15
+    End If
+    If Abs(h.xv) < .05 Then h.xv = 0: Exit Sub
+    nx = h.x + h.xv
+    If nx < 0 Then nx = 0: h.xv = 0
+    If nx > levelCols * TILE - HERO_W Then nx = levelCols * TILE - HERO_W: h.xv = 0
+    If Not overlapsSolid(h, nx, h.y) Then h.x = nx: Exit Sub
+    For i = 1 To STEP_TOL
+        If Not overlapsSolid(h, nx, h.y - i) Then h.x = nx: h.y = h.y - i: Exit Sub
+    Next
+    ' blocked: slide up to the wall
+    If h.xv > 0 Then dirn = 1 Else dirn = -1
+    If touchingLava(h, h.x + dirn, h.y) Then h.alive = FALSE: h.cause = DIE_LAVA: Exit Sub
+    Do While Abs(nx - h.x) > .01
+        If overlapsSolid(h, h.x + dirn * .5, h.y) Then Exit Do
+        h.x = h.x + dirn * .5
+        If dirn * (h.x - nx) > 0 Then h.x = nx
+    Loop
+    h.xv = 0
+End Sub
+
 Function tileAt& (c As Long, r As Long)
     If c < 0 Or c >= levelCols Or r < 0 Or r >= ROWS Then
         tileAt& = T_EMPTY
@@ -843,7 +914,8 @@ End Function
 Function isSolid& (h As HeroState, c As Long, r As Long)
     Dim t As Long
     t = tileAt(c, r)
-    isSolid& = (t = T_GROUND) Or (t = T_LAVA) Or (t = T_BARRIER And h.barriersOn <> 0)
+    isSolid& = (t = T_GROUND) Or (t = T_LAVA)
+    If t = T_BARRIER Then isSolid& = ((h.openMask And 2 ^ gemIndex(c, r)) = 0) ' tileAt said c, r is on the map
 End Function
 
 Function overlapsSolid& (h As HeroState, x As Single, y As Single)
@@ -950,9 +1022,18 @@ Sub touchTiles (h As HeroState)
                         End If
                     End If
                 Case T_SWITCH
-                    If h.barriersOn Then h.barriersOn = FALSE: simEvents = simEvents Or EV_SWITCH
-                Case T_TELEIN
-                    If teleCol(c, r) >= 0 Then
+                    bit = 2 ^ gemIndex(c, r)
+                    If (h.openMask And bit) = 0 Then h.openMask = h.openMask Or bit: simEvents = simEvents Or EV_SWITCH
+                Case T_TELEIN, T_TELEOUT
+                    ' auto-run: touching an entrance teleports. Free move:
+                    ' they're doors, up enters, and exits lead back
+                    If freeMove Then
+                        m = doorPress
+                    Else
+                        m = (t = T_TELEIN)
+                    End If
+                    If m And teleCol(c, r) >= 0 Then
+                        doorPress = FALSE
                         h.x = teleCol(c, r) * TILE + (TILE - HERO_W) / 2
                         h.y = teleRow(c, r) * TILE + TILE - HERO_H
                         simEvents = simEvents Or EV_TELEPORT
@@ -1049,6 +1130,7 @@ Sub loadLevel (n As Long)
         Next
     Next
     pairTeleporters
+    groupSwitches
 
     initHero hero
     If Not headless Then
@@ -1061,7 +1143,26 @@ Sub loadLevel (n As Long)
     attempt = 0
 End Sub
 
-' Each teleporter leads to the nearest exit to its right.
+' Each switch opens the barriers after it, up to the next switch: number the
+' switches left to right and give each barrier the number of the switch
+' before it (kept in gemIndex, which switches and barriers don't otherwise use).
+Sub groupSwitches
+    Dim c As Long, r As Long, n As Long
+    n = -1
+    For c = 0 To levelCols - 1
+        For r = 0 To ROWS - 1
+            If tiles(c, r) = T_SWITCH Then n = n + 1: gemIndex(c, r) = n Mod MAX_GEMS
+        Next
+        For r = 0 To ROWS - 1
+            If tiles(c, r) = T_BARRIER Then
+                If n < 0 Then gemIndex(c, r) = MAX_GEMS Else gemIndex(c, r) = n Mod MAX_GEMS
+            End If
+        Next
+    Next
+End Sub
+
+' Each teleporter leads to the nearest exit to its right. Exits link back to
+' their teleporter, for free-move mode where portals work both ways.
 Sub pairTeleporters
     Dim c As Long, r As Long, c2 As Long, r2 As Long, found As Long
     For c = 0 To levelCols - 1
@@ -1075,6 +1176,16 @@ Sub pairTeleporters
                     Next
                     If found Then Exit For
                 Next
+            End If
+        Next
+    Next
+    For c = 0 To levelCols - 1
+        For r = 0 To ROWS - 1
+            If tiles(c, r) = T_TELEIN Then
+                If teleCol(c, r) >= 0 Then
+                    c2 = teleCol(c, r): r2 = teleRow(c, r)
+                    teleCol(c2, r2) = c: teleRow(c2, r2) = r
+                End If
             End If
         Next
     Next
@@ -1495,7 +1606,7 @@ Sub drawDynamicTiles (cx As Long, oy As Long)
                     Case T_TOGGLEA, T_TOGGLEB
                         drawToggleSpike x, y, t
                     Case T_SWITCH
-                        If hero.barriersOn Or gameState = ST_TITLE Then
+                        If (hero.openMask And 2 ^ gemIndex(c, r)) = 0 Or gameState = ST_TITLE Then
                             p = 1 + Sin(frameCount / 9) * .1
                             putCentered glow(GLOW_YELLOW), x + TILE / 2, y + TILE / 2, p, p
                             putCentered sprSwitchOn, x + TILE / 2, y + TILE / 2, 1, 1
@@ -1503,7 +1614,7 @@ Sub drawDynamicTiles (cx As Long, oy As Long)
                             putCentered sprSwitchOff, x + TILE / 2, y + TILE / 2, 1, 1
                         End If
                     Case T_BARRIER
-                        If hero.barriersOn Or gameState = ST_TITLE Then
+                        If (hero.openMask And 2 ^ gemIndex(c, r)) = 0 Or gameState = ST_TITLE Then
                             _PutImage (x + 2, y), sprBarrier
                         Else
                             Line (x + 2, y)-Step(TILE - 5, TILE - 1), _RGBA32(255, 210, 60, 40), B
@@ -1614,7 +1725,9 @@ End Sub
 Sub drawHero (cx As Long, oy As Long, vis As Single)
     Dim f As Long, x As Single, y As Single, w As Single, h As Single, q As Long
     Dim sy As Single, r As Long, c As Long, sx1 As Single, sx2 As Single
-    Dim bx As Single, gy As Single, fl As Single
+    Dim bx As Single, gy As Single, fl As Single, fs As Long
+    fs = 1
+    If freeMove And hero.facing < 0 Then fs = -1
 
     ' shadow on the first floor below the hero
     sx1 = hero.x + 2: sx2 = hero.x + HERO_W - 2
@@ -1630,7 +1743,14 @@ Sub drawHero (cx As Long, oy As Long, vis As Single)
     Next
 
     If hero.grounded Then
-        If gameState = ST_PLAY Then f = (frameCount \ 4) Mod 6 Else f = 8
+        If gameState <> ST_PLAY Then
+            f = 8
+        ElseIf freeMove Then
+            ' run cycle follows the distance walked; stand still = idle
+            If Abs(hero.xv) < .4 Then f = 8 Else f = Int(hero.x / 16) Mod 6
+        Else
+            f = (frameCount \ 4) Mod 6
+        End If
     ElseIf hero.yv < -1 Then
         f = 6
     Else
@@ -1648,19 +1768,32 @@ Sub drawHero (cx As Long, oy As Long, vis As Single)
     If vis >= 1 And hero.mode = MODE_JET Then
         If hero.thrust Then
             fl = .7 + Rnd * .4
-            _PutImage (bx - 13, gy - 6)-(bx - 7, gy - 6 + 12 * fl), sprFlame
+            _PutImage (bx - 13 * fs, gy - 6)-(bx - 7 * fs, gy - 6 + 12 * fl), sprFlame
         End If
-        _PutImage (bx - 15, gy - 19)-(bx - 7, gy - 6), sprPack
+        _PutImage (bx - 15 * fs, gy - 19)-(bx - 7 * fs, gy - 6), sprPack
     ElseIf vis >= 1 And hero.mode = MODE_WINGS Then
         fl = .35 + .65 * (.5 + .5 * Sin(frameCount / 3)) ' flap
-        _PutImage (bx - 20, gy - 15 - 7 * fl)-(bx - 4, gy - 15 + 7 * fl), sprWingL
+        _PutImage (bx - 20 * fs, gy - 15 - 7 * fl)-(bx - 4 * fs, gy - 15 + 7 * fl), sprWingL
     End If
 
     ' vis < 1 squeezes the hero into a thin, tall sliver (teleports)
     w = 28 * vis
     h = 28 * (1 + (1 - vis) * .8)
-    If w >= 1 Then _PutImage (bx - w / 2 + .5, gy - h)-(bx + w / 2 - .5, gy - 1), heroImg(f * HERO_SQ + q)
+    ' facing left: swapping the x corners mirrors the image
+    If w >= 1 Then _PutImage (bx - (w / 2 - .5) * fs, gy - h)-(bx + (w / 2 - .5) * fs, gy - 1), heroImg(f * HERO_SQ + q)
     If vis < 1 Then Exit Sub
+
+    ' free move: a bobbing arrow when standing in a portal you can enter
+    If freeMove Then
+        c = Int((hero.x + HERO_W / 2) / TILE): r = Int((hero.y + HERO_H / 2) / TILE)
+        If tileAt(c, r) = T_TELEIN Or tileAt(c, r) = T_TELEOUT Then
+            If teleCol(c, r) >= 0 Then
+                sy = y - 16 + Sin(frameCount / 6) * 2
+                fillTri bx, sy, 5, sy + 5, _RGB32(230, 170, 255)
+                Line (bx - 1.5, sy + 5)-Step(3, 4), _RGB32(230, 170, 255), BF
+            End If
+        End If
+    End If
 
     ' spare air jumps
     For c = 1 To hero.airJumps
@@ -2333,6 +2466,11 @@ Sub drawTitle
     centerText "<  " + levelLabel(titleLevel) + "  >", 250, _RGB32(255, 230, 120)
     If bestPct(titleLevel) > 0 Then centerText "best:" + Str$(bestPct(titleLevel)) + "%", 272, _RGB32(255, 255, 255)
     If (frameCount \ 30) Mod 2 = 0 Then centerText "SPACE / click / tap to play", 320, _RGB32(255, 255, 255)
+    If freeMove Then
+        centerText "F free move: ON  (arrows / A D walk, SPACE jump, up / W enter portals)", 360, _RGB32(150, 250, 170)
+    Else
+        centerText "F free move: off", 360, _RGBA32(255, 255, 255, 150)
+    End If
     centerText "R restart   M mute   ESC menu", SH - 30, _RGBA32(255, 255, 255, 180)
 End Sub
 

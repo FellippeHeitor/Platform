@@ -174,7 +174,7 @@ Function searchLevel& (path() As _Byte, pathLen As Long, failX As Single)
                     k1 = Int(s.y + 1000) * 1024 + Int(s.yv * 5 + 512)
                     k2 = Int(s.x)
                     k3 = s.gemMask
-                    k4 = s.airJumps + s.mode * 64 + s.coyote * 256 + s.buffer * 4096 + (s.grounded And 1) * 65536 + (s.heldPrev And 1) * 131072 + (s.jumping And 1) * 262144 + (s.barriersOn And 1) * 524288
+                    k4 = s.airJumps + s.mode * 64 + s.coyote * 256 + s.buffer * 4096 + (s.grounded And 1) * 65536 + (s.heldPrev And 1) * 131072 + (s.jumping And 1) * 262144 + (s.openMask And 15) * 524288
                     hv = (k1 * 7919 + k2 * 13 + k3 * 17 + k4 * 31) And (HASH_SIZE - 1)
                     Do
                         If hStamp(hv) <> gen Then
