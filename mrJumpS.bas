@@ -191,7 +191,8 @@ Dim Shared clearance As Single
 ' presentation
 Dim Shared themes(0 To 3) As Theme, th As Theme
 Dim Shared levelImg As Long, skyImg As Long, farImg As Long, nearImg As Long
-Dim Shared heroImg(0 To 5) As Long
+Const HERO_SQ = 7 ' squash steps per pose, -0.6 .. 0.6
+Dim Shared heroImg(0 To 9 * HERO_SQ - 1) As Long, sprPack As Long
 Dim Shared sprSpikeUp As Long, sprSpikeDown As Long, sprGem As Long, sprPortal As Long
 Dim Shared sprJet As Long, sprFlame As Long, sprWingsBody As Long, sprWingL As Long, sprWingR As Long
 Dim Shared sprFoot As Long, sprSwitchOn As Long, sprSwitchOff As Long, sprBarrier As Long, sprFuel As Long, glow(1 To 6) As Long
@@ -1108,48 +1109,152 @@ Sub initThemes
     themes(3).stars = TRUE
 End Sub
 
-' Hero frames: 8x10 pixel art drawn at 2x. 0-2 run, 3 jump, 4 fall, 5 idle.
+' Hero frames, drawn smooth like the other sprites. Poses 0-5 run, 6 jump,
+' 7 fall, 8 idle; each in HERO_SQ squash steps (squash and stretch is baked
+' into the shapes rather than done by scaling, so the edges stay clean).
+' Frame = pose * HERO_SQ + step. The feet touch the bottom middle of the image.
 Sub initHeroSprites
-    Dim body(0 To 7) As String, legs(0 To 5) As String
-    Dim f As Long, r As Long, c As Long, s As String, ch As String, col As _Unsigned Long
+    Dim pose As Long, q As Long
+    For pose = 0 To 8
+        For q = 0 To HERO_SQ - 1
+            heroImg(pose * HERO_SQ + q) = makeHeroFrame(pose, (q - HERO_SQ \ 2) * .2)
+            rawWrites heroImg(pose * HERO_SQ + q), FALSE
+        Next
+    Next
+    sprPack = makePack
+    rawWrites sprPack, FALSE
+End Sub
 
-    body(0) = "..KKKK.."
-    body(1) = ".KBBBBK."
-    body(2) = "KRRRRRRK"
-    body(3) = "KBBBWPBK"
-    body(4) = "KBBBWPBK"
-    body(5) = "KBBBBBBK"
-    body(6) = ".KBBBBK."
-    body(7) = "..KKKK.."
-    legs(0) = ".F....F.F......F"
-    legs(1) = "..F..F....F..F.."
-    legs(2) = "...FF......FF..."
-    legs(3) = "..F.F....F...F.."
-    legs(4) = "..F..F...F....F."
-    legs(5) = "..F..F....F..F.."
+' Ellipse distance (approximate away from the edge, which is all we need).
+Function sdEllipse! (px As Single, py As Single, cx As Single, cy As Single, rx As Single, ry As Single)
+    Dim u As Single, v As Single, m As Single
+    u = (px - cx) / rx: v = (py - cy) / ry
+    m = rx
+    If ry < m Then m = ry
+    sdEllipse! = (Sqr(u * u + v * v) - 1) * m
+End Function
 
-    For f = 0 To 5
-        heroImg(f) = _NewImage(16, 20, 32)
-        _Dest heroImg(f)
-        For r = 0 To 9
-            If r < 8 Then s = body(r) Else s = Mid$(legs(f), (r - 8) * 8 + 1, 8)
-            For c = 0 To 7
-                ch = Mid$(s, c + 1, 1)
-                Select Case ch
-                    Case "K": col = _RGB32(34, 32, 52)
-                    Case "B": col = _RGB32(246, 244, 236)
-                    Case "R": col = _RGB32(232, 72, 72)
-                    Case "W": col = _RGB32(255, 255, 255)
-                    Case "P": col = _RGB32(34, 32, 52)
-                    Case "F": col = _RGB32(34, 32, 52)
-                    Case Else: col = 0
-                End Select
-                If col <> 0 Then Line (c * 2, r * 2)-Step(1, 1), col, BF
-            Next
+' Lighting for the hero's round shapes: 0 in shadow .. 1 fully lit (top left).
+Function heroLight! (px As Single, py As Single, cx As Single, cy As Single, rx As Single, ry As Single)
+    Dim nx As Single, ny As Single, t As Single, lam As Single
+    nx = (px - cx) / rx: ny = (py - cy) / ry
+    t = 1 - nx * nx - ny * ny
+    If t < 0 Then t = 0
+    lam = -.45 * nx - .55 * ny + .75 * Sqr(t)
+    If lam < 0 Then lam = 0
+    If lam > 1 Then lam = 1
+    heroLight! = lam
+End Function
+
+' s > 0 squashes (wide, short), s < 0 stretches (tall, thin).
+Function makeHeroFrame& (pose As Long, s As Single)
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single, e As Single
+    Dim ink As _Unsigned Long, red As _Unsigned Long, redDark As _Unsigned Long
+    Dim bx As Single, by As Single, rx As Single, ry As Single, bob As Single, lt As Single
+    Dim f1x As Single, f1y As Single, f2x As Single, f2y As Single, ph As Single
+    Dim a1 As Single, a2 As Single, eyeDy As Single, bandY As Single, bandH As Single
+    Dim kx As Single, ky As Single, e1x As Single, e2x As Single, ey As Single
+    Dim GY As Single
+    GY = 28
+    ink = _RGB32(34, 32, 52)
+    red = _RGB32(240, 82, 78): redDark = _RGB32(150, 34, 50)
+
+    ' pose: feet, body bob, headband tail angles (pi = straight back), gaze
+    If pose <= 5 Then
+        ph = pose / 6 * 6.2832
+        f1x = 14 + 3.4 * Cos(ph): f1y = GY - 1.9 - 2.2 * maxf(0, Sin(ph))
+        f2x = 14 - 3.4 * Cos(ph): f2y = GY - 1.9 - 2.2 * maxf(0, -Sin(ph))
+        bob = .9 * Abs(Sin(ph))
+        a1 = 3.1416 + .12 + .2 * Sin(ph * 2): a2 = 3.1416 - .28 + .2 * Sin(ph * 2 + 1.3)
+        eyeDy = 0
+    ElseIf pose = 6 Then ' rising: feet tucked, tails pulled down, looking up
+        f1x = 15.5: f1y = GY - 3.6: f2x = 11: f2y = GY - 2.6
+        bob = 1: a1 = 3.1416 - .55: a2 = 3.1416 - .95: eyeDy = -1
+    ElseIf pose = 7 Then ' falling: feet reaching down, tails up, looking down
+        f1x = 17: f1y = GY - 2.2: f2x = 11.5: f2y = GY - 1.9
+        bob = 0: a1 = 3.1416 + .6: a2 = 3.1416 + .25: eyeDy = .9
+    Else ' idle
+        f1x = 17: f1y = GY - 1.9: f2x = 11: f2y = GY - 1.9
+        bob = 0: a1 = 3.1416 - .35: a2 = 3.1416 - .75: eyeDy = 0
+    End If
+
+    rx = 8 * (1 + s * .3): ry = 7.6 * (1 - s * .25)
+    bx = 14.5: by = GY - 3 - ry - bob
+    bandY = by - ry * .55: bandH = 1.9 * (ry / 7.6)
+    kx = bx - rx + 1.2: ky = bandY + .3 ' headband knot at the back
+    ey = by + .3 * (ry / 7.6) + eyeDy
+    e1x = bx + rx * .2: e2x = bx + rx * .6
+
+    img = newSprite(28, GY)
+    For py = 0 To GY - 1
+        For px = 0 To 27
+            X = px + .5: Y = py + .5
+            pxBegin
+            ' headband tails, back one first
+            d = sdFeather(X, Y, kx, ky, a2, 6, 1.5)
+            pxLayer ink, cov(d - .5): pxLayer redDark, cov(d + .6)
+            d = sdFeather(X, Y, kx, ky, a1, 7.5, 1.7)
+            pxLayer ink, cov(d - .5): pxLayer mixColor(redDark, red, .55), cov(d + .6)
+            ' feet, behind the body
+            d = sdEllipse(X, Y, f2x, f2y, 2.9, 2)
+            pxLayer ink, cov(d): pxLayer _RGB32(58, 56, 84), cov(d + 1)
+            d = sdEllipse(X, Y, f1x, f1y, 2.9, 2)
+            pxLayer ink, cov(d): pxLayer mixColor(_RGB32(58, 56, 84), _RGB32(104, 100, 140), (f1y - Y + 1) / 3), cov(d + 1)
+            ' body
+            d = sdEllipse(X, Y, bx, by, rx, ry)
+            pxLayer ink, cov(d)
+            lt = heroLight(X, Y, bx, by, rx, ry)
+            pxLayer mixColor(_RGB32(172, 166, 206), _RGB32(255, 253, 246), .15 + lt * 1.1), cov(d + 1.1)
+            ' headband, clipped to the body
+            e = Abs(Y - bandY + (X - bx) * .06) - bandH
+            If d + 1.1 > e Then e = d + 1.1
+            pxLayer mixColor(redDark, red, .2 + lt * 1.1), cov(e)
+            pxLayer _RGBA32(255, 220, 210, 150), cov(Abs(Y - (bandY - bandH * .45) + (X - bx) * .06) - .35) * cov(d + 1.6) * lt
+            ' knot
+            d = sdCircle(X, Y, kx, ky, 1.9)
+            pxLayer ink, cov(d): pxLayer mixColor(redDark, red, .5), cov(d + .9)
+            ' eyes: the far one narrower, each with a catchlight
+            d = sdEllipse(X, Y, e1x, ey, 1.55, 2.6 * (ry / 7.6))
+            pxLayer ink, cov(d)
+            d = sdEllipse(X, Y, e2x, ey, 1.2, 2.45 * (ry / 7.6))
+            pxLayer ink, cov(d)
+            pxLayer _RGB32(255, 255, 255), cov(sdCircle(X, Y, e1x + .45, ey - 1.1, .5))
+            pxLayer _RGB32(255, 255, 255), cov(sdCircle(X, Y, e2x + .35, ey - 1.1, .4))
+            ' cheek
+            pxLayer _RGBA32(255, 120, 140, 110), cov(sdEllipse(X, Y, bx + rx * .5, ey + 3.1, 1.6, 1.1))
+            pxEnd px, py
         Next
     Next
     _Dest 0
-End Sub
+    makeHeroFrame& = img
+End Function
+
+' The jetpack the hero wears: a canister with a nozzle, lit from the left.
+Function makePack&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single
+    Dim ink As _Unsigned Long
+    ink = _RGB32(40, 40, 58)
+    img = newSprite(9, 14)
+    For py = 0 To 13
+        For px = 0 To 8
+            X = px + .5: Y = py + .5
+            pxBegin
+            d = sdBox(X, Y, 4.5, 6, 4, 5.5, 2.2)
+            pxLayer ink, cov(d)
+            pxLayer mixColor(_RGB32(220, 222, 236), _RGB32(120, 122, 146), (X - 1.5) / 6), cov(d + 1)
+            pxLayer _RGB32(255, 138, 48), cov(Abs(Y - 5) - .9) * cov(d + 1.5)
+            d = sdBox(X, Y, 4.5, 12.3, 2.3, 1.4, .5)
+            pxLayer ink, cov(d): pxLayer _RGB32(96, 98, 120), cov(d + 1)
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makePack& = img
+End Function
+
+Function maxf! (a As Single, b As Single)
+    If a > b Then maxf! = a Else maxf! = b
+End Function
 
 Function mixColor~& (a As _Unsigned Long, b As _Unsigned Long, tt As Single)
     Dim t As Single
@@ -1505,10 +1610,11 @@ Sub drawGoal (x As Single, y As Single)
     Next
 End Sub
 
-' vis < 1 squeezes the hero into a thin, tall sliver (used by teleports).
+' vis < 1 is used by teleports (see below).
 Sub drawHero (cx As Long, oy As Long, vis As Single)
-    Dim f As Long, x As Single, y As Single, w As Single, h As Single
+    Dim f As Long, x As Single, y As Single, w As Single, h As Single, q As Long
     Dim sy As Single, r As Long, c As Long, sx1 As Single, sx2 As Single
+    Dim bx As Single, gy As Single, fl As Single
 
     ' shadow on the first floor below the hero
     sx1 = hero.x + 2: sx2 = hero.x + HERO_W - 2
@@ -1524,31 +1630,43 @@ Sub drawHero (cx As Long, oy As Long, vis As Single)
     Next
 
     If hero.grounded Then
-        If gameState = ST_PLAY Then f = (frameCount \ 5) Mod 3 Else f = 5
-    ElseIf hero.yv < 0 Then
-        f = 3
+        If gameState = ST_PLAY Then f = (frameCount \ 4) Mod 6 Else f = 8
+    ElseIf hero.yv < -1 Then
+        f = 6
     Else
-        f = 4
+        f = 7
+    End If
+    q = Int(squash / .2 + .5) + HERO_SQ \ 2 ' squash > 0 = landing, < 0 = take-off
+    If q < 0 Then q = 0
+    If q > HERO_SQ - 1 Then q = HERO_SQ - 1
+
+    ' bottom middle of the hero on screen; y = roughly the top of its head
+    bx = hero.x + HERO_W / 2 - cx: gy = hero.y + HERO_H + oy
+    x = bx - 10: y = gy - 21
+
+    ' worn power-ups go behind the hero
+    If vis >= 1 And hero.mode = MODE_JET Then
+        If hero.thrust Then
+            fl = .7 + Rnd * .4
+            _PutImage (bx - 13, gy - 6)-(bx - 7, gy - 6 + 12 * fl), sprFlame
+        End If
+        _PutImage (bx - 15, gy - 19)-(bx - 7, gy - 6), sprPack
+    ElseIf vis >= 1 And hero.mode = MODE_WINGS Then
+        fl = .35 + .65 * (.5 + .5 * Sin(frameCount / 3)) ' flap
+        _PutImage (bx - 20, gy - 15 - 7 * fl)-(bx - 4, gy - 15 + 7 * fl), sprWingL
     End If
 
-    ' squash > 0 = landing (wide and short), < 0 = take-off (tall and thin)
-    w = 16 * (1 + squash * .35) * vis
-    h = 20 * (1 - squash * .3) * (1 + (1 - vis) * .8)
-    x = hero.x + HERO_W / 2 - w / 2 - cx
-    y = hero.y + HERO_H - h + oy
-    If w >= 1 Then _PutImage (x, y)-(x + w - 1, y + h - 1), heroImg(f)
+    ' vis < 1 squeezes the hero into a thin, tall sliver (teleports)
+    w = 28 * vis
+    h = 28 * (1 + (1 - vis) * .8)
+    If w >= 1 Then _PutImage (bx - w / 2 + .5, gy - h)-(bx + w / 2 - .5, gy - 1), heroImg(f * HERO_SQ + q)
     If vis < 1 Then Exit Sub
 
-    ' mode marker and spare air jumps
-    If hero.mode = MODE_JET Then
-        Line (x - 3, y + 8)-Step(3, 8), _RGB32(120, 120, 140), BF
-        If hero.thrust Then Line (x - 3, y + 17)-Step(3, 3 + Rnd * 4), _RGB32(255, 170, 60), BF
-    ElseIf hero.mode = MODE_WINGS Then
-        Line (x - 6, y + 6 + (frameCount Mod 10 < 5) * 2)-Step(5, 3), _RGB32(255, 255, 255), BF
-    End If
+    ' spare air jumps
     For c = 1 To hero.airJumps
-        putCentered sprGem, x + w / 2 - (hero.airJumps - 1) * 6 + (c - 1) * 12, y - 9, .45, .45
+        putCentered sprGem, bx - (hero.airJumps - 1) * 6 + (c - 1) * 12, y - 6, .45, .45
     Next
+    w = 20
     ' fuel gauge: a bar that stretches past full when you carry extra
     If hero.mode = MODE_JET Then
         Line (x + w / 2 - 13, y - 18)-Step(26 * fuelBarScale(hero.fuel), 4), _RGB32(50, 30, 24), BF
