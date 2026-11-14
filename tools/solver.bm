@@ -2,164 +2,118 @@
 ' HEADLESS = 1 and then this file; the game calls runLevelCheck before it
 ' opens a window. Nothing here is seen by QBJS or by normal builds.
 '
-' For every level it searches all button sequences (held / not held each
-' tick) through the real simStep, merging near-identical states. A winning
-' path is replayed exactly from a fresh start to confirm it. It also reports
-' how far a player who never presses gets, and the narrowest point.
+' For every level it:
+' - searches all button sequences (held / not held each tick) through the
+'   real simStep, merging near-identical states, and replays the winning
+'   path exactly from a fresh start to confirm it;
+' - reports how forgiving the tightest presses are (see timingReport);
+' - removes each pickup in turn and checks whether the level can still be
+'   beaten without it: a pickup you can skip isn't doing much;
+' - checks that a player who never presses doesn't finish.
+
+Const SOLVE_CAP = 8000
+Const HUMAN_PCT = 75 ' pickups are judged for a player this efficient
+Const HASH_SIZE = 65536
 
 Sub runLevelCheck
-    Const SOLVE_CAP = 4000
-    Const HASH_SIZE = 32768
+    Dim lv As Long, i As Long, n As Long, res As Long, allOk As Long
+    Dim failX As Single, c As Long, r As Long, t As Long, s As String
+    Dim idle As HeroState, maxTicks As Long, needed As String, optional As String, pct As Long, pad As Long
+    ReDim path(0) As _Byte, dummy(0) As _Byte
 
     headless = TRUE
-    Dim lv As Long, tick As Long, maxTicks As Long, i As Long, b As Long, j As Long
-    Dim nCur As Long, nNext As Long, solved As Long, winIdx As Long, failed As Long
-    Dim hv As Long, k1 As Long, k2 As Long, k3 As Long, k4 As Long, minW As Long, minWPct As Long, bestFailX As Single
-    Dim s As HeroState, idle As HeroState, replay As HeroState
-    Dim presses As Long, prevBit As Long, allOk As Long, pr As Long, thr As Long, kept As Long
-    Dim quota As Single, share As Single, bucket(0 To 15) As Long, gen As Long
-    Dim hK1(0 To HASH_SIZE - 1) As Long, hK2(0 To HASH_SIZE - 1) As Long
-    Dim hK3(0 To HASH_SIZE - 1) As Long, hK4(0 To HASH_SIZE - 1) As Long, hStamp(0 To HASH_SIZE - 1) As Long
-    ReDim cur(1 To SOLVE_CAP) As HeroState, nxt(1 To SOLVE_CAP * 2) As HeroState
-    ReDim curPar(1 To SOLVE_CAP) As Long, nxtPar(1 To SOLVE_CAP * 2) As Long
-    ReDim nxtBit(1 To SOLVE_CAP * 2) As Long
-    ReDim parentOf(0, 0) As Long, bitOf(0, 0) As _Byte, inputs(0) As _Byte
-
     allOk = TRUE
     Print "Level check:"; levelCount; "levels"
     For lv = 1 To levelCount
         loadLevel lv
-        maxTicks = (goalX - startX) / RUN_SPEED + 600
-        ReDim parentOf(1 To maxTicks, 1 To SOLVE_CAP) As Long
-        ReDim bitOf(1 To maxTicks, 1 To SOLVE_CAP) As _Byte
-
-        nCur = 1
-        initHero cur(1)
-        solved = FALSE: failed = FALSE: minW = SOLVE_CAP * 2: minWPct = 0
-        For tick = 1 To maxTicks
-            simTick = tick
-            nNext = 0
-            gen = gen + 1 ' hash stamp; never repeats, even across levels
-            For i = 1 To nCur
-                For b = 0 To 1
-                    s = cur(i)
-                    simStep s, -b
-                    If s.won Then solved = TRUE: winIdx = i: Exit For
-                    If s.alive Then
-                        ' state key: positions rounded so near-identical states merge
-                        k1 = Int(s.y + 1000) * 1024 + Int(s.yv * 5 + 512)
-                        k2 = Int(s.x)
-                        k3 = s.gemMask
-                        k4 = s.airJumps + s.mode * 64 + s.coyote * 256 + s.buffer * 4096 + (s.grounded And 1) * 65536 + (s.heldPrev And 1) * 131072 + (s.jumping And 1) * 262144 + (s.barriersOn And 1) * 524288
-                        hv = (k1 * 7919 + k2 * 13 + k3 * 17 + k4 * 31) And (HASH_SIZE - 1)
-                        Do
-                            If hStamp(hv) <> gen Then
-                                hStamp(hv) = gen: hK1(hv) = k1: hK2(hv) = k2: hK3(hv) = k3: hK4(hv) = k4
-                                nNext = nNext + 1
-                                nxt(nNext) = s: nxtPar(nNext) = i: nxtBit(nNext) = b
-                                Exit Do
-                            ElseIf hK1(hv) = k1 And hK2(hv) = k2 And hK3(hv) = k3 And hK4(hv) = k4 Then
-                                Exit Do
-                            End If
-                            hv = (hv + 1) And (HASH_SIZE - 1)
-                        Loop
-                    End If
-                Next
-                If solved Then Exit For
-            Next
-            If solved Then
-                parentOf(tick, 1) = winIdx: bitOf(tick, 1) = b
-                Exit For
-            End If
-            If nNext = 0 Then
-                failed = TRUE
-                bestFailX = 0
-                For i = 1 To nCur
-                    If cur(i).x > bestFailX Then bestFailX = cur(i).x: j = i
-                Next
-                Exit For
-            End If
-
-            If nNext < minW And tick > 30 Then
-                minW = nNext
-                minWPct = Int((nxt(1).x - startX) / (goalX - startX) * 100)
-            End If
-
-            ' Too many states: keep the most promising ones (spare air jumps,
-            ' then standing on ground) and an even spread of the rest.
-            If nNext > SOLVE_CAP Then
-                For i = 0 To 15: bucket(i) = 0: Next
-                For i = 1 To nNext
-                    pr = statePriority(nxt(i)): bucket(pr) = bucket(pr) + 1
-                Next
-                kept = 0
-                For thr = 15 To 0 Step -1
-                    If kept + bucket(thr) >= SOLVE_CAP Then Exit For
-                    kept = kept + bucket(thr)
-                Next
-                quota = SOLVE_CAP - kept
-                share = 0: nCur = 0
-                For i = 1 To nNext
-                    pr = statePriority(nxt(i))
-                    If pr > thr Then
-                        j = TRUE
-                    ElseIf pr = thr Then
-                        share = share + quota / bucket(thr)
-                        j = (share >= 1)
-                        If j Then share = share - 1
-                    Else
-                        j = FALSE
-                    End If
-                    If j And nCur < SOLVE_CAP Then
-                        nCur = nCur + 1
-                        cur(nCur) = nxt(i): curPar(nCur) = nxtPar(i)
-                        parentOf(tick, nCur) = nxtPar(i): bitOf(tick, nCur) = nxtBit(i)
-                    End If
-                Next
-            Else
-                For i = 1 To nNext
-                    cur(i) = nxt(i)
-                    parentOf(tick, i) = nxtPar(i): bitOf(tick, i) = nxtBit(i)
-                Next
-                nCur = nNext
-            End If
-        Next
-
         Print
         Print "Level"; lv; "- "; levelName; " ("; levelCols; "cols,"; Int((goalX - startX) / RUN_SPEED / 60 * 10) / 10; "s run)"
-        If solved Then
-            ' walk the parent links back to get the inputs, then replay them
-            ReDim inputs(1 To tick) As _Byte
-            j = 1
-            For i = tick To 1 Step -1
-                inputs(i) = bitOf(i, j)
-                j = parentOf(i, j)
-            Next
-            initHero replay
-            presses = 0: prevBit = 0
-            For i = 1 To tick
-                simTick = i
-                simStep replay, -inputs(i)
-                If inputs(i) And prevBit = 0 Then presses = presses + 1
-                prevBit = inputs(i)
-                If Not replay.alive Or replay.won Then Exit For
-            Next
-            If replay.won Then
-                Print "  BEATABLE: replay wins at tick"; i; "with"; presses; "presses"
-                timingReport inputs(), tick
-            Else
-                Print "  SEARCH WON BUT REPLAY FAILED at"; Int((replay.x - startX) / (goalX - startX) * 100); "% (merging too coarse)"
+        res = searchLevel(path(), n, failX)
+        Select Case res
+            Case 1
+                Print "  BEATABLE: replay wins at tick"; n
+                timingReport path(), n
+            Case 0
+                Print "  IMPOSSIBLE: every path dies by"; Int((failX - startX) / (goalX - startX) * 100); "%  (col"; Int(failX / TILE); ")"
+                allOk = FALSE
+            Case -1
+                Print "  TIMED OUT without reaching the goal"
+                allOk = FALSE
+            Case Else
+                Print "  SEARCH WON BUT REPLAY FAILED (state merging too coarse)"
+                allOk = FALSE
+        End Select
+
+        ' Which pickups actually matter? Tested as a player who wastes a
+        ' quarter of the fuel and wing time: a perfect player can squeeze
+        ' past almost anything, a real one can't.
+        If res = 1 Then
+            jetFuelFull = JET_FUEL * HUMAN_PCT / 100: fuelCanAmt = FUEL_CAN * HUMAN_PCT / 100
+            wingFull = WING_TICKS * HUMAN_PCT / 100
+            If searchLevel(dummy(), i, failX) <> 1 Then
+                Print "  TOO TIGHT: a player wasting"; 100 - HUMAN_PCT; "% of fuel/wing time can't finish"
                 allOk = FALSE
             End If
-        ElseIf failed Then
-            Print "  IMPOSSIBLE: every path dies by"; Int((bestFailX - startX) / (goalX - startX) * 100); "%  (x ="; Int(bestFailX); ", col"; Int(bestFailX / TILE); ")"
-            allOk = FALSE
-        Else
-            Print "  TIMED OUT without reaching the goal"
-            allOk = FALSE
+            needed = "": optional = ""
+            For c = 0 To levelCols - 1
+                For r = 0 To ROWS - 1
+                    t = tiles(c, r)
+                    If t = T_GEM Or t = T_FUEL Or t = T_JET Or t = T_WINGS Then
+                        Select Case t
+                            Case T_GEM: s = "diamond"
+                            Case T_FUEL: s = "fuel"
+                            Case T_JET: s = "jetpack"
+                            Case T_WINGS: s = "wings"
+                        End Select
+                        s = s + "@" + LTrim$(Str$(c))
+                        tiles(c, r) = T_EMPTY
+                        If searchLevel(dummy(), i, failX) = 1 Then optional = optional + " " + s Else needed = needed + " " + s
+                        tiles(c, r) = t
+                    End If
+                Next
+            Next
+            jetFuelFull = JET_FUEL: fuelCanAmt = FUEL_CAN: wingFull = WING_TICKS
+            If needed <> "" Then Print "  pickups needed:"; needed
+            If optional <> "" Then Print "  pickups you can skip:"; optional; "  <- not pulling their weight"
+
+            ' how much smaller could the fuel / wing budgets be? The solver is
+            ' a perfect player, so real players need some of this slack.
+            If levelHas(T_JET) Then
+                For pct = 90 To 10 Step -10
+                    jetFuelFull = JET_FUEL * pct / 100: fuelCanAmt = FUEL_CAN * pct / 100
+                    If searchLevel(dummy(), i, failX) <> 1 Then Exit For
+                Next
+                jetFuelFull = JET_FUEL: fuelCanAmt = FUEL_CAN
+                Print "  fuel slack: a perfect run still works with"; pct + 10; "% of the fuel"; slackNote$(pct + 10);
+                If pct >= 10 Then Print " (with"; pct; "% it fails by col"; Int(failX / TILE); ")" Else Print
+            End If
+            If levelHas(T_WINGS) Then
+                For pct = 90 To 10 Step -10
+                    wingFull = WING_TICKS * pct / 100
+                    If searchLevel(dummy(), i, failX) <> 1 Then Exit For
+                Next
+                wingFull = WING_TICKS
+                Print "  wings slack: a perfect run still works with"; pct + 10; "% of the wing time"; slackNote$(pct + 10);
+                If pct >= 10 Then Print " (with"; pct; "% it fails by col"; Int(failX / TILE); ")" Else Print
+            End If
+        End If
+
+        ' How much room is there? Re-solve with the hero's box grown on every
+        ' side. A level that only works pixel-perfect is miserable to play,
+        ' even if a perfect solver can beat it.
+        If res = 1 Then
+            For pad = 3 To 12 Step 3
+                clearance = pad
+                If searchLevel(dummy(), i, failX) <> 1 Then Exit For
+            Next
+            clearance = 0
+            Print "  clearance: still beatable with the hero"; pad - 3; "px bigger on each side"; clearNote$(pad - 3);
+            If pad <= 12 Then Print " (at"; pad; "px it fails by col"; Int(failX / TILE); ")" Else Print
+            If pad - 3 < 3 Then allOk = FALSE
         End If
 
         ' a player who never presses should not finish
+        maxTicks = (goalX - startX) / RUN_SPEED + 600
         initHero idle
         For i = 1 To maxTicks
             simTick = i
@@ -177,13 +131,148 @@ Sub runLevelCheck
     System
 End Sub
 
+' Breadth-first search over every held/not-held sequence, one tick at a time.
+' Returns 1 and the winning inputs in path() (verified by an exact replay),
+' 0 if every path dies (failX = furthest x reached), -1 on timeout, -2 if
+' the replay of the found path didn't win.
+Function searchLevel& (path() As _Byte, pathLen As Long, failX As Single)
+    Static gen As Long
+    Dim tick As Long, maxTicks As Long, i As Long, b As Long, j As Long
+    Dim nCur As Long, nNext As Long, solved As Long, winIdx As Long
+    Dim hv As Long, k1 As Long, k2 As Long, k3 As Long, k4 As Long
+    Dim s As HeroState, pr As Long, thr As Long, kept As Long
+    Dim quota As Single, share As Single, bucket(0 To 15) As Long
+    Static hK1() As Long, hK2() As Long, hK3() As Long, hK4() As Long, hStamp() As Long, hIdx() As Long
+    Static cur() As HeroState, nxt() As HeroState, nxtPar() As Long, nxtBit() As Long, ready As Long
+    If Not ready Then
+        ReDim hK1(0 To HASH_SIZE - 1) As Long, hK2(0 To HASH_SIZE - 1) As Long, hK3(0 To HASH_SIZE - 1) As Long
+        ReDim hK4(0 To HASH_SIZE - 1) As Long, hStamp(0 To HASH_SIZE - 1) As Long, hIdx(0 To HASH_SIZE - 1) As Long
+        ReDim cur(1 To SOLVE_CAP) As HeroState, nxt(1 To SOLVE_CAP * 2) As HeroState
+        ReDim nxtPar(1 To SOLVE_CAP * 2) As Long, nxtBit(1 To SOLVE_CAP * 2) As Long
+        ready = TRUE
+    End If
+
+    maxTicks = (goalX - startX) / RUN_SPEED + 600
+    ReDim parentOf(1 To maxTicks, 1 To SOLVE_CAP) As Long
+    ReDim bitOf(1 To maxTicks, 1 To SOLVE_CAP) As _Byte
+
+    nCur = 1
+    initHero cur(1)
+    For tick = 1 To maxTicks
+        simTick = tick
+        nNext = 0
+        gen = gen + 1 ' hash stamp; never repeats, even across searches
+        For i = 1 To nCur
+            For b = 0 To 1
+                s = cur(i)
+                simStep s, -b
+                If s.won Then solved = TRUE: winIdx = i: Exit For
+                If s.alive Then
+                    ' State key: positions rounded so near-identical states merge.
+                    ' Fuel and wing time are left out on purpose: of two states
+                    ' that differ only in those, keep the one with more left.
+                    k1 = Int(s.y + 1000) * 1024 + Int(s.yv * 5 + 512)
+                    k2 = Int(s.x)
+                    k3 = s.gemMask
+                    k4 = s.airJumps + s.mode * 64 + s.coyote * 256 + s.buffer * 4096 + (s.grounded And 1) * 65536 + (s.heldPrev And 1) * 131072 + (s.jumping And 1) * 262144 + (s.barriersOn And 1) * 524288
+                    hv = (k1 * 7919 + k2 * 13 + k3 * 17 + k4 * 31) And (HASH_SIZE - 1)
+                    Do
+                        If hStamp(hv) <> gen Then
+                            hStamp(hv) = gen: hK1(hv) = k1: hK2(hv) = k2: hK3(hv) = k3: hK4(hv) = k4
+                            nNext = nNext + 1
+                            nxt(nNext) = s: nxtPar(nNext) = i: nxtBit(nNext) = b
+                            hIdx(hv) = nNext
+                            Exit Do
+                        ElseIf hK1(hv) = k1 And hK2(hv) = k2 And hK3(hv) = k3 And hK4(hv) = k4 Then
+                            j = hIdx(hv)
+                            If s.fuel + s.wingTicks > nxt(j).fuel + nxt(j).wingTicks Then
+                                nxt(j) = s: nxtPar(j) = i: nxtBit(j) = b
+                            End If
+                            Exit Do
+                        End If
+                        hv = (hv + 1) And (HASH_SIZE - 1)
+                    Loop
+                End If
+            Next
+            If solved Then Exit For
+        Next
+        If solved Then
+            parentOf(tick, 1) = winIdx: bitOf(tick, 1) = b
+            Exit For
+        End If
+        If nNext = 0 Then
+            failX = 0
+            For i = 1 To nCur
+                If cur(i).x > failX Then failX = cur(i).x
+            Next
+            searchLevel& = 0
+            Exit Function
+        End If
+
+        ' Too many states: keep the most promising ones (resources left,
+        ' then standing on ground) and an even spread of the rest.
+        If nNext > SOLVE_CAP Then
+            For i = 0 To 15: bucket(i) = 0: Next
+            For i = 1 To nNext
+                pr = statePriority(nxt(i)): bucket(pr) = bucket(pr) + 1
+            Next
+            kept = 0
+            For thr = 15 To 0 Step -1
+                If kept + bucket(thr) >= SOLVE_CAP Then Exit For
+                kept = kept + bucket(thr)
+            Next
+            quota = SOLVE_CAP - kept
+            share = 0: nCur = 0
+            For i = 1 To nNext
+                pr = statePriority(nxt(i))
+                If pr > thr Then
+                    j = TRUE
+                ElseIf pr = thr Then
+                    share = share + quota / bucket(thr)
+                    j = (share >= 1)
+                    If j Then share = share - 1
+                Else
+                    j = FALSE
+                End If
+                If j And nCur < SOLVE_CAP Then
+                    nCur = nCur + 1
+                    cur(nCur) = nxt(i)
+                    parentOf(tick, nCur) = nxtPar(i): bitOf(tick, nCur) = nxtBit(i)
+                End If
+            Next
+        Else
+            For i = 1 To nNext
+                cur(i) = nxt(i)
+                parentOf(tick, i) = nxtPar(i): bitOf(tick, i) = nxtBit(i)
+            Next
+            nCur = nNext
+        End If
+    Next
+    If Not solved Then searchLevel& = -1: Exit Function
+
+    ' walk the parent links back to get the inputs, then confirm by replay
+    ReDim path(1 To tick) As _Byte
+    j = 1
+    For i = tick To 1 Step -1
+        path(i) = bitOf(i, j)
+        j = parentOf(i, j)
+    Next
+    pathLen = tick
+    If replayWins(path(), pathLen) Then searchLevel& = 1 Else searchLevel& = -2
+End Function
+
 Function statePriority& (h As HeroState)
+    ' prefer states with resources left: air jumps, fuel, wing time
     Dim p As Long
     p = h.airJumps
+    If h.mode = MODE_JET Then p = p + h.fuel \ 30
     If p > 6 Then p = 6
     p = p * 2
     If h.grounded Then p = p + 1
-    If h.mode = MODE_WINGS Then p = 15
+    If h.mode = MODE_WINGS Then
+        p = 13 + h.wingTicks \ 60
+        If p > 15 Then p = 15
+    End If
     statePriority& = p
 End Function
 
@@ -211,7 +300,7 @@ Sub timingReport (seq() As _Byte, n As Long)
     Dim pS(1 To MAXP) As Long, pE(1 To MAXP) As Long, np As Long
     Dim t As Long, k As Long, pass As Long, lo As Long, hi As Long, sum As Long
     Dim winS(1 To MAXP) As Long, winH(1 To MAXP) As Long, rank(1 To MAXP) As Long
-    Dim col As Long, shown As Long, before As Long
+    Dim col As Long, shown As Long, before As Long, nx As Long
     ReDim a(1 To n) As _Byte, tst(1 To n) As _Byte
     For t = 1 To n: a(t) = seq(t): Next
 
@@ -257,10 +346,11 @@ Sub timingReport (seq() As _Byte, n As Long)
         If winS(k) < 7 Or winH(k) < 4 Or shown < 2 Then
             col = Int((startX + pS(k) * RUN_SPEED) / TILE)
             Print "    press at col"; col; ": start window"; winS(k); ", hold window"; winH(k);
-            If modeAt(a(), pS(k)) <> MODE_RUN Then
-                ' no landing resets the state, so fixing the later taps
+            If k < np Then nx = pS(k + 1) Else nx = n
+            If Not landsBetween(a(), pS(k) + 2, nx) Then
+                ' no landing before the next press, so fixing the later taps
                 ' makes every shift look fatal; a player would adapt
-                Print "  (jetpack/wings: estimate too strict)"
+                Print "  (chained in the air: estimate too strict)"
             Else
                 Print tightness$(winS(k), winH(k))
             End If
@@ -344,13 +434,49 @@ Function shiftedWins& (seq() As _Byte, tst() As _Byte, n As Long, pS() As Long, 
     shiftedWins& = replayWins(tst(), n)
 End Function
 
-' Hero mode just before tick t of a button sequence.
-Function modeAt& (a() As _Byte, t As Long)
+' Does the hero stand on ground at any tick from t1 to t2 of a sequence?
+Function landsBetween& (a() As _Byte, t1 As Long, t2 As Long)
     Dim h As HeroState, i As Long
     initHero h
-    For i = 1 To t - 1
+    For i = 1 To t2
         simTick = i
         simStep h, -a(i)
+        If i >= t1 And h.grounded Then landsBetween& = TRUE: Exit Function
+        If Not h.alive Or h.won Then Exit For
     Next
-    modeAt& = h.mode
+    landsBetween& = FALSE
+End Function
+
+Function levelHas& (t As Long)
+    Dim c As Long, r As Long
+    For c = 0 To levelCols - 1
+        For r = 0 To ROWS - 1
+            If tiles(c, r) = t Then levelHas& = TRUE: Exit Function
+        Next
+    Next
+End Function
+
+' Players aren't perfect: they need fuel/time to spare.
+Function slackNote$ (pct As Long)
+    If pct >= 90 Then
+        slackNote$ = "  <- almost no margin"
+    ElseIf pct >= 80 Then
+        slackNote$ = "  <- tight"
+    ElseIf pct <= 40 Then
+        slackNote$ = "  <- very generous"
+    Else
+        slackNote$ = ""
+    End If
+End Function
+
+Function clearNote$ (pad As Long)
+    If pad < 3 Then
+        clearNote$ = "  <- pixel-perfect, too tight"
+    ElseIf pad < 6 Then
+        clearNote$ = "  <- tight"
+    ElseIf pad < 9 Then
+        clearNote$ = "  (fair)"
+    Else
+        clearNote$ = "  (roomy)"
+    End If
 End Function

@@ -40,6 +40,7 @@ Const T_JET = 13
 Const T_WINGS = 14
 Const T_NORMAL = 15
 Const T_GOAL = 16
+Const T_FUEL = 17
 
 ' hero modes
 Const MODE_RUN = 0
@@ -54,7 +55,9 @@ Const JUMP_V = 10.2
 Const CUT_V = 4
 Const AIR_JUMP_V = 9
 Const MAX_FALL = 12
-Const FLAP_V = 5.5
+Const JET_THRUST = 0.8 ' upward push per tick while the button is held
+Const JET_MAX_UP = 5.5
+Const JET_MAX_FALL = 7
 Const JET_GRAVITY = 0.35
 Const COYOTE_TICKS = 5
 Const BUFFER_TICKS = 7
@@ -62,7 +65,10 @@ Const STEP_TOL = 7
 Const HERO_W = 14
 Const HERO_H = 20
 Const TOGGLE_TICKS = 50
-Const MAX_GEMS = 30
+Const MAX_GEMS = 30 ' diamonds and fuel cans per level
+Const JET_FUEL = 150 ' ticks of thrust in a fresh jetpack (2.5 s held)
+Const FUEL_CAN = 75 ' ticks of thrust added by a fuel can
+Const WING_TICKS = 150 ' how long wings last (2.5 s)
 
 ' death causes
 Const DIE_NONE = 0
@@ -80,6 +86,10 @@ Const EV_SWITCH = 16
 Const EV_TELEPORT = 32
 Const EV_MODE = 64
 Const EV_FLAP = 128
+Const EV_FUEL = 256
+Const EV_EMPTY = 512 ' jetpack out of fuel
+Const EV_WINGSOFF = 1024 ' wings worn off
+Const EV_DROP = 2048 ' landed with a jetpack, which drops it
 
 ' sound effects (files in sfx/, made by tools/make_sfx.bas)
 Const SFX_JUMP = 1
@@ -128,6 +138,9 @@ Type HeroState
     alive As Long
     won As Long
     cause As Long
+    fuel As Long
+    wingTicks As Long
+    thrust As Long
 End Type
 
 Type Theme
@@ -169,6 +182,11 @@ ReDim Shared teleCol(0, 0) As Long, teleRow(0, 0) As Long
 Dim Shared startX As Single, startY As Single, goalX As Single, goalRow As Long
 Dim Shared hero As HeroState, simTick As Long, simEvents As Long
 Dim Shared headless As Long
+' power-up amounts; variables so the level checker can test smaller budgets
+Dim Shared jetFuelFull As Long, fuelCanAmt As Long, wingFull As Long
+' extra pixels around the hero for walls, ceilings and hazards; always 0 in
+' the game, the level checker raises it to measure how much room a level has
+Dim Shared clearance As Single
 
 ' presentation
 Dim Shared themes(0 To 3) As Theme, th As Theme
@@ -176,7 +194,7 @@ Dim Shared levelImg As Long, skyImg As Long, farImg As Long, nearImg As Long
 Dim Shared heroImg(0 To 5) As Long
 Dim Shared sprSpikeUp As Long, sprSpikeDown As Long, sprGem As Long, sprPortal As Long
 Dim Shared sprJet As Long, sprFlame As Long, sprWingsBody As Long, sprWingL As Long, sprWingR As Long
-Dim Shared sprFoot As Long, sprSwitchOn As Long, sprSwitchOff As Long, sprBarrier As Long, glow(1 To 6) As Long
+Dim Shared sprFoot As Long, sprSwitchOn As Long, sprSwitchOff As Long, sprBarrier As Long, sprFuel As Long, glow(1 To 6) As Long
 Dim Shared accR As Single, accG As Single, accB As Single, accA As Single
 Dim Shared polyX(1 To 8) As Single, polyY(1 To 8) As Single, polyN As Long, polyOrient As Single
 Dim Shared particles(1 To 300) As Particle
@@ -191,6 +209,7 @@ Dim Shared teleT As Long, teleFromX As Single, teleFromY As Single
 Dim Shared teleCamFrom As Single, teleCamTo As Single
 
 Randomize Timer
+jetFuelFull = JET_FUEL: fuelCanAmt = FUEL_CAN: wingFull = WING_TICKS
 countLevels
 
 $If HEADLESS = 1 Then
@@ -258,10 +277,11 @@ Loop
 '=============================================================================
 ' Level data: count, then per level: name, theme, 18 rows (top to bottom).
 ' . empty  # ground  = plank (one-way)  ^ spike  v hanging spike  L lava
-' * diamond (air jump)  T/t alternating spikes  S switch  B barrier
+' * diamond (air jump)  F fuel can (+flaps for a jetpack)  T/t alternating spikes
+' S switch  B barrier
 ' O teleporter  o teleporter exit  J jetpack  W wings  N back to normal
 ' @ start  G goal
-Data 6
+Data 10
 Data "First Steps",0
 Data "......................................................................................................................................................................."
 Data "......................................................................................................................................................................."
@@ -358,24 +378,100 @@ Data "...@............TT.......ttTT................B.....#######################
 Data "################################################...#######################......################################################################"
 Data "################################################...#######################......################################################################"
 Data "Lift Off",1
-Data "................############################################################...................................................................................."
-Data ".......................##......##......##......##......##......##......##......................................................................................."
-Data ".......................##......##......##......##......##......##......##......................................................................................."
-Data ".......................##......##......##......##......##......##......##......................................................................................."
-Data ".......................##......##......##......##......##......##......##......................................................................................."
-Data ".......................##......##......##......##......##......vv......##......................................................................................."
-Data ".......................##......##......##......vv......##..............##......................................................................................."
-Data ".......................##......vv......##..............##..............##......................................................................................."
-Data ".......................##..............##..............vv..............vv......................................................................................."
-Data ".......................vv..............vv......................................................................................................................."
-Data ".............................................................................................................^.................................................."
-Data "...........................................................................................................................^...................................."
-Data "...............................................................##..............................................................................................."
-Data "...............................................##..............##..............................................................................................."
-Data "...............................##..............##..............##...................................^................^.........................................."
-Data "...@..........J................##..............##......##......##......##......N....W..........................................N........^.....G................."
-Data "#####################^^##^^^^^^##^^^^^^##^^^^^^##^^^^^^##^^^^^^##^^^^^^##^^^##########........................................##################################"
-Data "######################################################################################........................................##################################"
+Data "................##############################################################......................................................................"
+Data "........................##......##......##......##......##......##......##.........................................................................."
+Data "........................##......##......##......##......##......##......##.........................................................................."
+Data "........................##......##......##......##......##......##......##.........................................................................."
+Data "........................##......##......##......##......##......##......##.........................................................................."
+Data "........................##......##......##......##......##......vv......##.........................................................................."
+Data "........................##......##......##......vv......##..............##.........................................................................."
+Data "........................##......vv......##..............##..............##.........................................................................."
+Data "........................##..............##..............vv..............vv.........................................................................."
+Data "........................vv..............vv.........................................................................................................."
+Data "..............................................................................................................^....................................."
+Data "...................................................................................................................................................."
+Data ".....................................F..........................^^.................................................................................."
+Data "................................................^^..............##.................................................^................................"
+Data "................................^^..............##..............##.......................................^.........................................."
+Data "...@..........J.................##..............##......^^......##......^^...............^...^....W..........................^....G................."
+Data "####################^^^^^^^^^^^^##^^^^^^^^^^^^^^##^^^^^^##^^^^^^##^^^^^^##^^^^######################....................############################"
+Data "####################################################################################################....................############################"
+Data "Fuel Line",2
+Data ".........................................####################################################################################......................................"
+Data ".................................................##........##........##........##........##........##........##........##.........................................."
+Data ".................................................##........##........##........##........##........##........##........##.........................................."
+Data ".................................................##........##........##........##........##........##........##........##.........................................."
+Data ".................................................##........##........##........##........##........##........##........##.........................................."
+Data ".................................................##........##........##........##........##........##........##........##.........................................."
+Data ".................................................##........vv........##........##........##........##........vv........##.........................................."
+Data ".................................................##..................##........##........vv........##..................##.........................................."
+Data ".................................................vv..................vv........##..................vv..................vv.........................................."
+Data "......................................................F........................vv.......................F.........................................................."
+Data "..................................................................................................................................................................."
+Data "....................................................................................F.............................................................................."
+Data "..................................................................................................................................................................."
+Data "...........................................................LL................................................LL...................................................."
+Data "......................................J....................LL............................LL..................LL...................^................................"
+Data "...@............^.......*..........######........LL........LL........LL..................LL........LL........LL........LL....##########...^^.....G................."
+Data "############################.......######LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL######################################"
+Data "############################LLLLLLL######LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL######################################"
+Data "Night Shift",3
+Data "...................................................................................................................................."
+Data "...................................................................................................................................."
+Data "...................................................................................................................................."
+Data "...................................................................................................................................."
+Data ".........................................................................###........................................................"
+Data ".........................................................................###........................................................"
+Data ".........................................................................###........................................................"
+Data ".........................................................................###........................................................"
+Data ".........................................................................###........................................................"
+Data ".........................................................................###........................................................"
+Data ".....................................................S.......B...........###........................................................"
+Data ".............................................................B...........###.....^....^............................................."
+Data "...................................tt........................B...........#################.........................................."
+Data "...........................T.....======......................B...........###vvvvvvvvvvvvvv.........................................."
+Data "........................======...............................B...........###................................T.....G................."
+Data "...@...........TT.tt........................*................B........O..###.o...............tT..t......############################"
+Data "#####################.....................######################...#################################....############################"
+Data "#####################.....................######################...#################################....############################"
+Data "Feather Sprint",1
+Data "................##################################............................####################............................"
+Data "..............................................................................####################............................"
+Data "..............................................................................####################............................"
+Data "..............................................................................####################............................"
+Data "..............................................................................####################............................"
+Data "..............................................................................####################............................"
+Data "................................W.............................................####################............................"
+Data "............................................^.................................####################............................"
+Data "................................^.............................................####################............................"
+Data "........................^.....................................................vvvvvvvvvvvvvvvvvvvv............................"
+Data ".............................................................................................................................."
+Data ".............................................................................................................................."
+Data "........................................^....................................................................................."
+Data "............................^..................^...........................W.................................................."
+Data "....................^.................................^.....*............#####........^.......^..............................."
+Data "...@..........W...................................##############.........#####....^.......^...........^.....G................."
+Data "################..................................##############.........#####....................############################"
+Data "################..................................##############LLLLLLLLL#####....................############################"
+Data "Gauntlet",0
+Data "..........................................................................................##########################################################.............................................................."
+Data "...............................................................................................##.....##.....##.....##.....##.....##.....##.....##................................................................"
+Data "...............................................................................................##.....##.....##.....##.....##.....##.....##.....##................................................................"
+Data "...............................................................................................##.....##.....##.....##.....##.....##.....##.....##................................................................"
+Data "...............................................................................................##.....##.....##.....##.....##.....##.....##.....##................................................................"
+Data "...............................................................................................##.....vv.....##.....##.....##.....##.....##.....##................................................................"
+Data "...............................................................................................##............##.....vv.....##.....##.....##.....vv................................................................"
+Data "...............................................................................................##............##............##.....vv.....##......................................................................."
+Data "...............................................................................................vv............##............##............##......................................................................."
+Data "...................................................................................B.........................##............vv............##.............................^........................................."
+Data "..........................^..^..............................................S......B.........................vv..........................vv......................................^................................"
+Data "........................#######....................................................B..................^^.........................................................................................................."
+Data "........................vvvvvvv....................................................B..................##............^^..........................^^................................................................"
+Data "..........................................===......................................B..................##..F.........##............^^............##.................^.............................................."
+Data "...................................====...........................TT..t............B....J......^^.....##............##............##............##...........................^...................................."
+Data "...@...........^..^^.............................*.^...........###########################.....##.....##.....^^.....##.....^^.....##.....^^.....##..........W..........................^^...^...G................."
+Data "################################................#######........###############################^##^^^^^##^^^^^##^^^^^##^^^^^##^^^^^##^^^^^##^^^^^##^^##########......................##############################"
+Data "################################................#######LLLLLLLL###############################################################################################......................##############################"
 
 '=============================================================================
 ' GAME FLOW
@@ -507,11 +603,34 @@ Sub handleEvents
     by = hero.y + HERO_H
     If simEvents And EV_JUMP Then squash = -.6: dust cx, by, 5: sfx SFX_JUMP
     If simEvents And EV_AIRJUMP Then squash = -.6: ring cx, by, _RGB32(120, 230, 255): sfx SFX_AIRJUMP
-    If simEvents And EV_FLAP Then squash = -.4: dust cx, by, 3: sfx SFX_FLAP
+    If simEvents And EV_FLAP Then squash = -.3: sfx SFX_FLAP
+    If hero.thrust And (frameCount Mod 2) = 0 Then
+        spawnParticle cx - 6, by - 2, -.5 + (Rnd - .5) * .6, 1.5 + Rnd, 12, 2 + Rnd * 2, _RGBA32(255, 190, 90, 200)
+    End If
     If simEvents And EV_LAND Then squash = .7: dust cx, by, 6
     If simEvents And EV_GEM Then
         ring cx, hero.y, _RGB32(120, 230, 255): sfx SFX_GEM
         showPopup "+1 AIR JUMP", "press again in mid-air", _RGB32(120, 230, 255)
+    End If
+    If simEvents And EV_FUEL Then
+        ring cx, hero.y, _RGB32(255, 150, 60): sfx SFX_GEM
+        If hero.mode = MODE_JET Then
+            showPopup "+FUEL", "", _RGB32(255, 160, 80)
+        Else
+            showPopup "FUEL", "useless without a jetpack", _RGB32(255, 160, 80)
+        End If
+    End If
+    If simEvents And EV_EMPTY Then
+        sfx SFX_FLAP: dust cx, hero.y + HERO_H / 2, 8
+        showPopup "OUT OF FUEL", "", _RGB32(255, 120, 90)
+    End If
+    If simEvents And EV_DROP Then
+        sfx SFX_FLAP: dust cx, hero.y + HERO_H, 8
+        showPopup "JETPACK DROPPED", "it only lasts one flight", _RGB32(255, 160, 80)
+    End If
+    If simEvents And EV_WINGSOFF Then
+        sfx SFX_FLAP: dust cx, hero.y + HERO_H / 2, 8
+        showPopup "WINGS GONE", "", _RGB32(200, 230, 210)
     End If
     If simEvents And EV_SWITCH Then
         shake = 4: sfx SFX_SWITCH
@@ -522,10 +641,10 @@ Sub handleEvents
         Select Case hero.mode
             Case MODE_JET
                 ring cx, hero.y + HERO_H / 2, _RGB32(255, 150, 60)
-                showPopup "JETPACK", "every tap is a flap", _RGB32(255, 160, 80)
+                showPopup "JETPACK", "hold to fly, tap to nudge - one flight", _RGB32(255, 160, 80)
             Case MODE_WINGS
                 ring cx, hero.y + HERO_H / 2, _RGB32(130, 240, 150)
-                showPopup "WINGS", "jump as often as you like", _RGB32(140, 245, 160)
+                showPopup "WINGS", "jump as often as you like, briefly", _RGB32(140, 245, 160)
             Case Else
                 ring cx, hero.y + HERO_H / 2, _RGB32(170, 210, 255)
                 showPopup "ON FOOT", "normal jumps again", _RGB32(180, 215, 255)
@@ -594,6 +713,9 @@ Sub initHero (h As HeroState)
     h.alive = TRUE
     h.won = FALSE
     h.cause = DIE_NONE
+    h.fuel = 0
+    h.wingTicks = 0
+    h.thrust = FALSE
 End Sub
 
 Sub simStep (h As HeroState, held As Long)
@@ -604,9 +726,26 @@ Sub simStep (h As HeroState, held As Long)
     h.heldPrev = held
     If pressed Then h.buffer = BUFFER_TICKS
 
+    ' --- wings wear off
+    If h.mode = MODE_WINGS Then
+        h.wingTicks = h.wingTicks - 1
+        If h.wingTicks <= 0 Then h.mode = MODE_RUN: h.jumping = FALSE: simEvents = simEvents Or EV_WINGSOFF
+    End If
+
     ' --- jump input
+    h.thrust = FALSE
     If h.mode = MODE_JET Then
-        If pressed Then h.yv = -FLAP_V: h.buffer = 0: simEvents = simEvents Or EV_FLAP
+        ' hold to thrust upwards; fuel burns only while held, so a quick tap
+        ' is a small nudge that costs little
+        h.buffer = 0
+        If held And h.fuel > 0 Then
+            h.thrust = TRUE
+            h.yv = h.yv - JET_THRUST
+            If h.yv < -JET_MAX_UP Then h.yv = -JET_MAX_UP
+            h.fuel = h.fuel - 1
+            If pressed Then simEvents = simEvents Or EV_FLAP
+            If h.fuel <= 0 Then h.mode = MODE_RUN: h.jumping = FALSE: simEvents = simEvents Or EV_EMPTY
+        End If
     Else
         If h.buffer > 0 And (h.grounded Or h.coyote > 0) Then
             h.yv = -JUMP_V
@@ -628,8 +767,13 @@ Sub simStep (h As HeroState, held As Long)
     If h.buffer > 0 Then h.buffer = h.buffer - 1
 
     ' --- gravity
-    If h.mode = MODE_JET Then h.yv = h.yv + JET_GRAVITY Else h.yv = h.yv + GRAVITY
-    If h.yv > MAX_FALL Then h.yv = MAX_FALL
+    If h.mode = MODE_JET Then
+        h.yv = h.yv + JET_GRAVITY
+        If h.yv > JET_MAX_FALL Then h.yv = JET_MAX_FALL
+    Else
+        h.yv = h.yv + GRAVITY
+        If h.yv > MAX_FALL Then h.yv = MAX_FALL
+    End If
 
     ' --- horizontal: always running. Hitting a wall is fatal, but small
     ' ledges (STEP_TOL pixels) are climbed automatically.
@@ -657,7 +801,11 @@ Sub simStep (h As HeroState, held As Long)
             h.y = landY - HERO_H
             h.yv = 0
             h.grounded = TRUE
-            If Not wasGrounded Then simEvents = simEvents Or EV_LAND
+            If Not wasGrounded Then
+                simEvents = simEvents Or EV_LAND
+                ' the jetpack is for one flight: touching down drops it
+                If h.mode = MODE_JET Then h.mode = MODE_RUN: h.fuel = 0: simEvents = simEvents Or EV_DROP
+            End If
             h.jumping = FALSE
             If touchingLava(h, h.x, h.y + 1) Then h.alive = FALSE: h.cause = DIE_LAVA: Exit Sub
         End If
@@ -700,8 +848,8 @@ End Function
 Function overlapsSolid& (h As HeroState, x As Single, y As Single)
     Dim c As Long, r As Long
     overlapsSolid& = FALSE
-    For c = Int(x / TILE) To Int((x + HERO_W - .01) / TILE)
-        For r = Int(y / TILE) To Int((y + HERO_H - .01) / TILE)
+    For c = Int((x - clearance) / TILE) To Int((x + HERO_W + clearance - .01) / TILE)
+        For r = Int((y - clearance) / TILE) To Int((y + HERO_H - .01) / TILE)
             If isSolid(h, c, r) Then overlapsSolid& = TRUE: Exit Function
         Next
     Next
@@ -737,9 +885,9 @@ End Function
 Function findCeiling! (h As HeroState)
     Dim c As Long, r As Long
     findCeiling! = -1
-    r = Int(h.y / TILE)
+    r = Int((h.y - clearance) / TILE)
     For c = Int(h.x / TILE) To Int((h.x + HERO_W - .01) / TILE)
-        If isSolid(h, c, r) Then findCeiling! = (r + 1) * TILE: Exit Function
+        If isSolid(h, c, r) Then findCeiling! = (r + 1) * TILE + clearance: Exit Function
     Next
 End Function
 
@@ -755,12 +903,12 @@ Sub touchTiles (h As HeroState)
     Dim hx1 As Single, hy1 As Single, hx2 As Single, hy2 As Single
     Dim tx As Single, ty As Single
 
-    ' a slightly smaller box for hazards, so near misses feel fair
-    hx1 = h.x + 2: hx2 = h.x + HERO_W - 2
-    hy1 = h.y + 2: hy2 = h.y + HERO_H - 1
-
-    For c = Int(h.x / TILE) To Int((h.x + HERO_W - .01) / TILE)
-        For r = Int(h.y / TILE) To Int((h.y + HERO_H - .01) / TILE)
+    ' hazards: a slightly smaller box, so near misses feel fair (grown by
+    ' `clearance` when the level checker measures how much room there is)
+    hx1 = h.x + 2 - clearance: hx2 = h.x + HERO_W - 2 + clearance
+    hy1 = h.y + 2 - clearance: hy2 = h.y + HERO_H - 1 + clearance
+    For c = Int(hx1 / TILE) To Int((hx2 - .01) / TILE)
+        For r = Int(hy1 / TILE) To Int((hy2 - .01) / TILE)
             t = tileAt(c, r)
             tx = c * TILE: ty = r * TILE
             Select Case t
@@ -775,13 +923,30 @@ Sub touchTiles (h As HeroState)
                         h.alive = FALSE: h.cause = DIE_SPIKE: Exit Sub
                     End If
                 Case T_LAVA
-                    h.alive = FALSE: h.cause = DIE_LAVA: Exit Sub
-                Case T_GEM
+                    If boxHit(hx1, hy1, hx2, hy2, tx, ty, tx + TILE, ty + TILE) Then
+                        h.alive = FALSE: h.cause = DIE_LAVA: Exit Sub
+                    End If
+            End Select
+        Next
+    Next
+
+    ' pickups and triggers: the hero's real box
+    For c = Int(h.x / TILE) To Int((h.x + HERO_W - .01) / TILE)
+        For r = Int(h.y / TILE) To Int((h.y + HERO_H - .01) / TILE)
+            t = tileAt(c, r)
+            Select Case t
+                Case T_GEM, T_FUEL
                     bit = 2 ^ gemIndex(c, r)
                     If (h.gemMask And bit) = 0 Then
                         h.gemMask = h.gemMask Or bit
-                        h.airJumps = h.airJumps + 1
-                        simEvents = simEvents Or EV_GEM
+                        If t = T_GEM Then
+                            h.airJumps = h.airJumps + 1
+                            simEvents = simEvents Or EV_GEM
+                        Else
+                            ' a can refills a running jetpack; without one it's wasted
+                            If h.mode = MODE_JET Then h.fuel = h.fuel + fuelCanAmt
+                            simEvents = simEvents Or EV_FUEL
+                        End If
                     End If
                 Case T_SWITCH
                     If h.barriersOn Then h.barriersOn = FALSE: simEvents = simEvents Or EV_SWITCH
@@ -796,6 +961,9 @@ Sub touchTiles (h As HeroState)
                     m = MODE_RUN
                     If t = T_JET Then m = MODE_JET
                     If t = T_WINGS Then m = MODE_WINGS
+                    ' grabbing a power-up again refills it, silently
+                    If m = MODE_JET And h.fuel < jetFuelFull Then h.fuel = jetFuelFull
+                    If m = MODE_WINGS Then h.wingTicks = wingFull
                     If h.mode <> m Then
                         h.mode = m
                         h.jumping = FALSE
@@ -855,8 +1023,8 @@ Sub loadLevel (n As Long)
                 Case "^": tiles(c, r) = T_SPIKE
                 Case "v": tiles(c, r) = T_SPIKEDOWN
                 Case "L": tiles(c, r) = T_LAVA
-                Case "*"
-                    tiles(c, r) = T_GEM
+                Case "*", "F"
+                    If ch = "*" Then tiles(c, r) = T_GEM Else tiles(c, r) = T_FUEL
                     gemIndex(c, r) = gems Mod MAX_GEMS
                     gems = gems + 1
                 Case "T": tiles(c, r) = T_TOGGLEA
@@ -1207,6 +1375,13 @@ Sub drawDynamicTiles (cx As Long, oy As Long)
                             putCentered sprGem, x + TILE / 2, y + TILE / 2 + b, 1, 1
                             twinkle x + TILE / 2 - 4, y + TILE / 2 + b - 6, (frameCount + c * 17) Mod 90
                         End If
+                    Case T_FUEL
+                        If (hero.gemMask And (2 ^ gemIndex(c, r))) = 0 Or gameState = ST_TITLE Then
+                            b = Sin(frameCount / 11 + c) * 2
+                            p = 1 + Sin(frameCount / 9 + c) * .1
+                            putCentered glow(GLOW_ORANGE), x + TILE / 2, y + TILE / 2 + b, p * .8, p * .8
+                            putCentered sprFuel, x + TILE / 2, y + TILE / 2 + b, 1, 1
+                        End If
                     Case T_TOGGLEA, T_TOGGLEB
                         drawToggleSpike x, y, t
                     Case T_SWITCH
@@ -1360,13 +1535,26 @@ Sub drawHero (cx As Long, oy As Long, vis As Single)
     ' mode marker and spare air jumps
     If hero.mode = MODE_JET Then
         Line (x - 3, y + 8)-Step(3, 8), _RGB32(120, 120, 140), BF
-        If hero.yv < 0 Then Line (x - 3, y + 17)-Step(3, 3 + Rnd * 4), _RGB32(255, 170, 60), BF
+        If hero.thrust Then Line (x - 3, y + 17)-Step(3, 3 + Rnd * 4), _RGB32(255, 170, 60), BF
     ElseIf hero.mode = MODE_WINGS Then
         Line (x - 6, y + 6 + (frameCount Mod 10 < 5) * 2)-Step(5, 3), _RGB32(255, 255, 255), BF
     End If
     For c = 1 To hero.airJumps
         putCentered sprGem, x + w / 2 - (hero.airJumps - 1) * 6 + (c - 1) * 12, y - 9, .45, .45
     Next
+    ' fuel gauge: a bar that stretches past full when you carry extra
+    If hero.mode = MODE_JET Then
+        Line (x + w / 2 - 13, y - 18)-Step(26 * fuelBarScale(hero.fuel), 4), _RGB32(50, 30, 24), BF
+        Line (x + w / 2 - 12, y - 17)-Step(26 * fuelBarScale(hero.fuel) - 2, 2), _RGB32(70, 44, 36), BF
+        If hero.fuel * 26 / JET_FUEL > 2 Then Line (x + w / 2 - 12, y - 17)-Step(26 * hero.fuel / JET_FUEL - 2, 2), _RGB32(255, 160, 60), BF
+    End If
+    ' wings timer: a shrinking bar that blinks near the end
+    If hero.mode = MODE_WINGS Then
+        If hero.wingTicks > 40 Or (frameCount \ 4) Mod 2 = 0 Then
+            Line (x + w / 2 - 13, y - 18)-Step(26, 4), _RGB32(30, 50, 40), BF
+            Line (x + w / 2 - 12, y - 17)-Step(24 * hero.wingTicks / WING_TICKS, 2), _RGB32(150, 250, 170), BF
+        End If
+    End If
 End Sub
 
 ' A column of light on the hero; strength 0..1.
@@ -1424,6 +1612,7 @@ Sub initSprites
     sprSwitchOff = makeSwitch(FALSE)
     sprPortal = makePortal
     sprBarrier = makeBarrier
+    sprFuel = makeFuel
     glow(GLOW_CYAN) = makeGlow(_RGB32(120, 230, 255))
     glow(GLOW_ORANGE) = makeGlow(_RGB32(255, 150, 60))
     glow(GLOW_GREEN) = makeGlow(_RGB32(130, 240, 150))
@@ -1435,7 +1624,7 @@ Sub initSprites
     rawWrites sprSpikeUp, FALSE: rawWrites sprSpikeDown, FALSE: rawWrites sprGem, FALSE
     rawWrites sprJet, FALSE: rawWrites sprFlame, FALSE: rawWrites sprWingsBody, FALSE
     rawWrites sprWingL, FALSE: rawWrites sprWingR, FALSE: rawWrites sprFoot, FALSE
-    rawWrites sprSwitchOn, FALSE: rawWrites sprSwitchOff, FALSE: rawWrites sprPortal, FALSE: rawWrites sprBarrier, FALSE
+    rawWrites sprSwitchOn, FALSE: rawWrites sprSwitchOff, FALSE: rawWrites sprPortal, FALSE: rawWrites sprBarrier, FALSE: rawWrites sprFuel, FALSE
     For i = 1 To 6: rawWrites glow(i), FALSE: Next
 End Sub
 
@@ -1814,6 +2003,29 @@ Function makeSwitch& (onState As Long)
     makeSwitch& = img
 End Function
 
+' Fuel can: red jerrycan with a cap and a pale label band.
+Function makeFuel&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single
+    img = newSprite(16, 20)
+    For py = 0 To 19
+        For px = 0 To 15
+            X = px + .5: Y = py + .5
+            pxBegin
+            d = sdBox(X, Y, 10, 3, 2.2, 2, .8) ' cap
+            pxLayer _RGB32(50, 40, 40), cov(d)
+            pxLayer _RGB32(170, 170, 186), cov(d + 1)
+            d = sdBox(X, Y, 8, 11.5, 6.5, 7.5, 2.2) ' body
+            pxLayer _RGB32(80, 20, 18), cov(d)
+            pxLayer mixColor(_RGB32(255, 104, 80), _RGB32(196, 40, 32), (X - 2) / 12), cov(d + 1)
+            pxLayer _RGBA32(255, 236, 200, 220), cov(sdBox(X, Y, 8, 12, 4.5, 2, .8))
+            pxLayer _RGBA32(255, 255, 255, 120), cov(sdBox(X, Y, 3.6, 10, .7, 4, .5))
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeFuel& = img
+End Function
+
 ' Barrier block: rounded, with soft yellow and dark hazard stripes.
 Function makeBarrier&
     Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single, v As Single
@@ -1857,6 +2069,10 @@ Function makePortal&
     Next
     _Dest 0
     makePortal& = img
+End Function
+
+Function fuelBarScale! (f As Long)
+    If f > JET_FUEL Then fuelBarScale! = f / JET_FUEL Else fuelBarScale! = 1
 End Function
 
 '--- particles

@@ -30,10 +30,13 @@ code). Build natively from the QB64-PE folder:
   climbed automatically. Planks (`=`) can be jumped through from below.
 - Instant retry, death counter, progress bar with your best attempt marked,
   and the percentage reached on the death screen.
-- Six levels, each introducing something new: steps and gaps, spikes and
-  low ceilings, planks, diamonds (one extra air jump each) over lava,
-  alternating spikes / switches and barriers / teleporters, and a jetpack
-  (every press is a flap) and wings (unlimited air jumps) finale.
+- Ten levels. The first five each introduce something new: steps and gaps,
+  spikes and low ceilings, planks, diamonds (one extra air jump each) over
+  lava, and alternating spikes / switches and barriers / teleporters. The
+  last five are built around limited power-ups:
+  - **Jetpack**: every press is a flap, but fuel is limited (a gauge shows
+    what's left); **fuel cans** add flaps. When it's empty you drop.
+  - **Wings**: unlimited air jumps for 2.5 seconds (a bar shows the time).
 - Four themes with parallax hills, clouds, water, particles, a pixel-art
   hero with squash and stretch, and soft sound effects.
 
@@ -59,10 +62,12 @@ character per 25px tile. The key is in the comment above the data.
 physics code and replays the winning inputs to confirm them. It then reports
 how forgiving the level is: for the tightest presses, how many ticks (1/60 s)
 early or late you can press, and how much shorter or longer you can hold,
-and still make it. Under ~4 ticks is hard; under ~2 is frame-perfect. In
-jetpack and wings sections that estimate is too strict, because a player
-adjusts later taps and the check doesn't. It also shows how far a player who
-never presses gets:
+and still make it. Under ~4 ticks is hard; under ~2 is frame-perfect. For
+presses chained in the air (no landing before the next press) that estimate
+is too strict, because a player adjusts later taps and the check doesn't.
+It also removes each pickup in turn and re-solves the level, listing which
+pickups are needed and which can be skipped (a skippable pickup isn't doing
+much), and shows how far a player who never presses gets:
 
     ./qb64pe -x /path/to/levelcheck.bas -o levelcheck && ./levelcheck
 
