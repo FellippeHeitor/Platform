@@ -2540,5 +2540,12 @@ End Function
 
 Sub sfx (n As Long)
     If muted Or headless Then Exit Sub
-    If sounds(n) > 0 Then _SndPlayCopy sounds(n)
+    If sounds(n) <= 0 Then Exit Sub
+    ' a copy lets the same sound overlap itself; QBJS releases before
+    ' 2026-10-20 lack _SndPlayCopy, so the browser just restarts the sound
+$If WEB Then
+    _SndPlay sounds(n)
+$Else
+    _SndPlayCopy sounds(n)
+$End If
 End Sub
