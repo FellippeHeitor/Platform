@@ -229,6 +229,7 @@ Const STAR_PTS = 10 ' times the combo
 Const COMBO_TICKS = 80 ' to grab the next star and keep the combo going
 Const COMBO_MAX = 8
 Const ALL_STARS_BONUS = 500
+Const STAR_GAP = 7 ' fewest columns between stars (an arc's 3 count as one)
 Dim Shared starX(1 To MAX_STARS) As Single, starY(1 To MAX_STARS) As Single
 Dim Shared starTaken(1 To MAX_STARS) As Long, nStars As Long, starsGot As Long
 Dim Shared score As Long, combo As Long, comboTicks As Long
@@ -1525,16 +1526,18 @@ End Sub
 ' them without editing its data. Walking left to right, follow the floor the
 ' auto-runner would be on: of the surfaces in each column (ground or plank
 ' with room above), take the one nearest the current floor, as long as it's
-' no more than 3 tiles up (about a jump). A star floats at body height on
-' every 4th column of floor, and over each gap a short arc of stars traces
-' a jump across it. Nothing goes on or next to spikes, tar, lava or crocs.
+' no more than 3 tiles up (about a jump). Stars float at body height along
+' the floor, 3 mark the top of a jump over each gap 3 tiles or wider, and
+' long gaps (flying) get a line through the open air, all kept at least
+' STAR_GAP columns apart. Nothing goes on or next to spikes, tar, lava or crocs.
 ' The countdown is set here too: the time it takes the auto-runner, half as
 ' much again and ten seconds more, rounded up to 5 s.
 Sub placeStars
     Dim c As Long, r As Long, pathRow As Long, best As Long, gapStart As Long
     Dim c0 As Long, c1 As Long, i As Long, n As Long, h As Long, rr As Long
-    Dim t As Single
+    Dim t As Single, lastC As Long, m As Long
     nStars = 0
+    lastC = -100 ' column of the last star placed: keep them STAR_GAP apart
     c0 = Int(startX / TILE) + 3
     c1 = Int(goalX / TILE) - 1
     pathRow = Int((startY + HERO_H) / TILE) + 1 ' the floor under the start
@@ -1556,28 +1559,37 @@ Sub placeStars
             If gapStart < 0 Then gapStart = c
         Else
             If gapStart >= 0 Then
-                ' arc over the gap from gapStart to c - 1, peaking 2 tiles up
+                ' arc over the gap from gapStart to c - 1, peaking 2 tiles up:
+                ' 3 stars at the top of the jump
                 n = c - gapStart
-                If n >= 2 And n <= 9 And gapStart > c0 Then
+                m = (n - 1) \ 2 ' the gap's middle column
+                If n >= 3 And n <= 9 And gapStart > c0 And gapStart + m - 1 - lastC >= STAR_GAP Then
                     rr = pathRow
                     If best < rr Then rr = best
-                    For i = 0 To n - 1
+                    For i = m - 1 To m + 1
                         t = (i + 1) / (n + 1)
                         h = Int(4 * t * (1 - t) * 2 + .5)
                         addStar gapStart + i, rr - 1 - h
                     Next
+                    lastC = gapStart + m + 1
                 ElseIf n > 9 Then
-                    ' too far to jump: a flying stretch. A star every 3rd
-                    ' column, in the middle of the tallest open space there.
-                    For i = 1 To n - 2 Step 3
-                        r = openMiddle(gapStart + i)
-                        If r > 0 Then addStar gapStart + i, r
+                    ' too far to jump: a flying stretch. Stars STAR_GAP
+                    ' apart, in the middle of the tallest open space there.
+                    For i = 2 To n - 3
+                        If gapStart + i - lastC >= STAR_GAP Then
+                            r = openMiddle(gapStart + i)
+                            If r > 0 Then addStar gapStart + i, r: lastC = gapStart + i
+                        End If
                     Next
                 End If
                 gapStart = -1
             End If
             pathRow = best
-            If c >= c0 And c Mod 4 = 0 Then addStar c, best - 1
+            If c >= c0 And c - lastC >= STAR_GAP + 1 Then
+                n = nStars
+                addStar c, best - 1
+                If nStars > n Then lastC = c
+            End If
         End If
     Next
     timeLimit = ((goalX - startX) / RUN_SPEED * 1.5 + 600)
