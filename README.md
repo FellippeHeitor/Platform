@@ -38,12 +38,11 @@ teleporters.
 
 ![Diamond Skies](forum-post/02-diamond-skies.png)
 
-Level 6, **Jungle Crossing**, is a nod to the jungle adventures we played on
-the Atari 2600. You grab vines by touching their tips and let go with a
-press, and you hop across crocodiles. A croc's head is always safe to stand
-on, but its snout only while the jaws are shut. Mind the tar pits. You can
-hang on a vine as long as you like: the rest of the jungle only moves on as
-you gain new ground.
+Level 6, **Jungle Crossing**, is a nod to Atari 2600's Pitfall. You grab 
+vines by touching their tips and let go with a press, and you hop across
+crocodiles. A croc's head is always safe to stand on, but its snout only
+while the jaws are shut. Mind the tar pits. You can hang on a vine as long
+as you like: the rest of the jungle only moves on as you gain new ground.
 
 ![Swinging on a vine](forum-post/03-jungle-vine.png)
 ![Crocodiles](forum-post/04-jungle-crocs.png)
