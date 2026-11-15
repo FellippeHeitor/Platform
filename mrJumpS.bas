@@ -239,6 +239,7 @@ Dim Shared bestPct(1 To 99) As Long, lastPct As Long, deathCause As Long
 Const SND_RATE = 22050 ' sample rate of the generated sounds
 Dim Shared titleLevel As Long, sounds(1 To 10) As Long
 Dim Shared music(0 To 4) As Long ' one looping tune per theme (see makeMusicIfMissing)
+Dim Shared victorySong As Long ' played once on winning a level (see makeVictoryIfMissing)
 Dim Shared popText As String, popHint As String, popLife As Long, popColor As _Unsigned Long
 Dim Shared teleT As Long, teleFromX As Single, teleFromY As Single
 Dim Shared teleCamFrom As Single, teleCamTo As Single
@@ -614,7 +615,7 @@ Sub updateGame (held As Long)
                     bestPct(levelNum) = 100
                     recordProgress levelNum
                     burst goalX, hero.y, 60, _RGB32(255, 230, 90)
-                    sfx SFX_WIN
+                    If victorySong <= 0 Then sfx SFX_WIN ' the song replaces it
                     gameState = ST_WON
                     stateTicks = 0
                 End If
@@ -3264,16 +3265,29 @@ $Else
 $End If
         music(i) = _SndOpen(sfxPath("music" + LTrim$(Str$(i))))
     Next
+$If WEB Then
+$Else
+    makeVictoryIfMissing
+$End If
+    victorySong = _SndOpen(sfxPath("victory"))
 End Sub
 
 ' The current level's theme tune loops while you play (and on the title
-' screen, for the level picked there). Dying doesn't restart it. M mutes it
-' along with everything else.
+' screen, for the level picked there). Dying stops it, and the next attempt
+' starts it over from the top (_SndStop rewinds). Winning swaps it for the
+' victory song, which plays once and is cut short if you move on before it
+' ends. M mutes it all along with everything else.
 Sub updateMusic
     Static playing As Long ' theme + 1 of the tune playing, 0 = none
-    Dim want As Long
+    Static cheering As Long ' the victory song is playing
+    Dim want As Long, won As Long
+    won = (gameState = ST_WON Or gameState = ST_END) And Not muted And Not headless And victorySong > 0
+    If won <> cheering Then
+        If won Then _SndPlay victorySong Else _SndStop victorySong
+        cheering = won
+    End If
     want = 0
-    If Not muted And Not headless And gameState <> ST_END Then
+    If Not muted And Not headless And gameState <> ST_END And gameState <> ST_DEAD And gameState <> ST_WON Then
         If music(levelTheme) > 0 Then want = levelTheme + 1
     End If
 $If WEB Then
@@ -3438,6 +3452,57 @@ Sub makeMusicIfMissing (n As Long)
     Next
     If peak > 0 Then
         For i = 0 To total - 1: buf(i) = buf(i) * .17 / peak: Next
+    End If
+    sndSaveWav buf(), f
+End Sub
+
+' The victory song: a short fanfare over C - F G - C, in the theme tunes'
+' instruments, ending on a ringing chord. Not a loop, so the buffer runs on
+' past the last note to let it fade.
+Sub makeVictoryIfMissing
+    Dim buf(0) As Single, f As String, e8 As Long, mel As String, tok As String
+    Dim i As Long, q As Long, d As Long, at8 As Long, nt As Long, peak As Single
+    f = "sfx/victory.wav"
+    If _FileExists(f) Then Exit Sub
+    If Not _DirExists("sfx") Then MkDir "sfx"
+    e8 = Int(60 / 150 / 2 * SND_RATE) ' 150 bpm
+    ReDim buf(0 To 30 * e8 - 1) As Single
+
+    ' melody, soft lead doubled an octave up by a quiet bell
+    mel = "G4:1 C5:1 E5:1 G5:3 E5:1 G5:1 A5:2 F5:1 A5:1 G5:2 D5:1 B4:1 C6:8"
+    Do
+        tok = wordOf(mel, i)
+        If tok = "" Then Exit Do
+        q = InStr(tok, ":")
+        d = Val(Mid$(tok, q + 1))
+        nt = noteSemi(Left$(tok, q - 1)) + 12 * (Val(Mid$(tok, q - 1, 1)) + 1)
+        musNote buf(), at8 * e8, nt, d * e8, .28, 1
+        musNote buf(), at8 * e8, nt + 12, d * e8, .05, 4
+        at8 = at8 + d: i = i + 1
+    Loop
+
+    ' bass: C, then F and G, then a long low C
+    musNote buf(), 0, 36, 3 * e8, .32, 2: musNote buf(), 3 * e8, 43, 3 * e8, .28, 2
+    musNote buf(), 6 * e8, 36, 2 * e8, .3, 2
+    musNote buf(), 8 * e8, 41, 4 * e8, .32, 2: musNote buf(), 12 * e8, 43, 4 * e8, .32, 2
+    musNote buf(), 16 * e8, 36, 8 * e8, .36, 2
+    ' plucked chord stabs, then the final chord on bells
+    musNote buf(), 3 * e8, 64, e8, .1, 3: musNote buf(), 3 * e8, 67, e8, .1, 3
+    musNote buf(), 10 * e8, 65, e8, .1, 3: musNote buf(), 10 * e8, 69, e8, .1, 3
+    musNote buf(), 14 * e8, 62, e8, .1, 3: musNote buf(), 14 * e8, 67, e8, .1, 3
+    musNote buf(), 16 * e8, 60, 0, .12, 4: musNote buf(), 16 * e8, 64, 0, .12, 4
+    musNote buf(), 16 * e8, 67, 0, .12, 4
+    ' drums: kick on the beats, a pickup roll into the last chord
+    For i = 0 To 14 Step 2: musNote buf(), i * e8, 0, e8, .3, 6: Next
+    musNote buf(), 15 * e8, 0, e8, .22, 6
+    musNote buf(), 16 * e8, 0, e8, .4, 6: musNote buf(), 16 * e8, 0, e8, .08, 7
+
+    ' a touch louder than the theme tunes, as it plays on its own
+    For i = 0 To UBound(buf)
+        If Abs(buf(i)) > peak Then peak = Abs(buf(i))
+    Next
+    If peak > 0 Then
+        For i = 0 To UBound(buf): buf(i) = buf(i) * .22 / peak: Next
     End If
     sndSaveWav buf(), f
 End Sub
