@@ -2240,14 +2240,19 @@ Sub drawHero (cx As Long, oy As Long, vis As Single)
     fs = 1
     If freeMove And hero.facing < 0 Then fs = -1
 
-    ' shadow on the first floor below the hero
-    sx1 = hero.x + 2: sx2 = hero.x + HERO_W - 2
+    ' shadow on the first floor below the hero; it shrinks and fades as the
+    ' hero gets higher above it (gone by about 5 tiles up)
     For r = Int((hero.y + HERO_H) / TILE) To ROWS - 1
         If r >= 0 Then
             c = Int((hero.x + HERO_W / 2) / TILE)
             If isSolid(hero, c, r) Or tileAt(c, r) = T_PLANK Then
                 sy = r * TILE
-                Line (sx1 - cx, sy + 2 + oy)-(sx2 - cx, sy + 4 + oy), _RGBA32(0, 0, 0, 60), BF
+                fl = 1 - (sy - (hero.y + HERO_H)) / (TILE * 5)
+                If fl < .25 Then fl = .25
+                If fl > 1 Then fl = 1
+                w = (HERO_W / 2 - 2) * fl
+                sx1 = hero.x + HERO_W / 2 - w: sx2 = hero.x + HERO_W / 2 + w
+                Line (sx1 - cx, sy + 2 + oy)-(sx2 - cx, sy + 4 + oy), _RGBA32(0, 0, 0, 20 + 40 * fl), BF
                 Exit For
             End If
         End If
