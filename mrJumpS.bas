@@ -120,6 +120,7 @@ Const SFX_DIE = 8
 Const SFX_WIN = 9
 Const SFX_ARRIVE = 10
 Const SFX_STAR = 11 ' 11 .. 18: one per combo step, rising
+Const SFX_VINE = 19 ' caught a vine: a little jungle yell
 
 ' glow sprite colours
 Const GLOW_CYAN = 1
@@ -258,7 +259,7 @@ Dim Shared gameState As Long, stateTicks As Long, muted As Long
 Dim Shared deathsTotal As Long, levelDeaths As Long, attempt As Long
 Dim Shared bestPct(1 To 99) As Long, lastPct As Long, deathCause As Long
 Const SND_RATE = 22050 ' sample rate of the generated sounds
-Dim Shared titleLevel As Long, sounds(1 To 18) As Long
+Dim Shared titleLevel As Long, sounds(1 To 19) As Long
 Dim Shared music(0 To 4) As Long ' one looping tune per theme (see makeMusicIfMissing)
 Dim Shared victorySong As Long ' played once on winning a level (see makeVictoryIfMissing)
 Dim Shared popText As String, popHint As String, popLife As Long, popColor As _Unsigned Long
@@ -864,7 +865,7 @@ Sub handleEvents
         spawnParticle cx - 6, by - 2, -.5 + (Rnd - .5) * .6, 1.5 + Rnd, 12, 2 + Rnd * 2, _RGBA32(255, 190, 90, 200)
     End If
     If simEvents And EV_LAND Then squash = .7: dust cx, by, 6
-    If simEvents And EV_GRAB Then squash = .4: sfx SFX_FLAP
+    If simEvents And EV_GRAB Then squash = .4: sfx SFX_VINE
     If simEvents And EV_LETGO Then squash = -.5: sfx SFX_JUMP
     If simEvents And EV_GEM Then
         ring cx, hero.y, _RGB32(120, 230, 255): sfx SFX_GEM
@@ -3586,13 +3587,14 @@ End Sub
 ' A missing file just means that effect stays silent.
 
 Sub loadSounds
-    Dim names(1 To 18) As String, i As Long
+    Dim names(1 To 19) As String, i As Long
     names(1) = "jump": names(2) = "airjump": names(3) = "flap"
     names(4) = "gem": names(5) = "switch": names(6) = "teleport"
     names(7) = "mode": names(8) = "die": names(9) = "win"
     names(10) = "arrive"
     For i = 1 To 8: names(SFX_STAR + i - 1) = "star" + LTrim$(Str$(i)): Next
-    For i = 1 To 18
+    names(SFX_VINE) = "vine"
+    For i = 1 To 19
 $If WEB Then
 $Else
         makeSoundIfMissing names(i)
@@ -3681,6 +3683,9 @@ Sub makeSoundIfMissing (n As String)
             f1 = Val(Mid$("10471175131915681760209323492637", (Val(Right$(n, 1)) - 1) * 4 + 1, 4))
             sndNew buf(), .3: sndVoice buf(), f1, f1, 0, .25, .1: sndVoice buf(), f1 * 2, f1 * 2, 0, .12, .03
             sndVoice buf(), f1 * 1.5, f1 * 1.5, .04, .2, .04
+        Case "vine"
+            ' a quick Arabic-sounding yell: A > E... > G < D > E, slurred
+            sndNew buf(), .87: sndSlur buf(), "A4:.06 E5:.32 G5:.07 D5:.07 E5:.25", .13
         Case "win"
             sndNew buf(), .7: sndVoice buf(), 523, 523, 0, .25, .14: sndVoice buf(), 659, 659, .1, .25, .14
             sndVoice buf(), 784, 784, .2, .25, .14: sndVoice buf(), 1046, 1046, .3, .38, .14
@@ -3960,6 +3965,48 @@ Sub sndVoice (buf() As Single, f1 As Single, f2 As Single, delay As Single, leng
         If t < ATTACK Then env = t / ATTACK Else env = Exp(-5 * (t - ATTACK) / length)
         env = env * (1 - i / n) ' reach silence exactly at the end, no click
         buf(start + i) = buf(start + i) + Sin(phase) * env * vol
+    Next
+End Sub
+
+' A slurred phrase on a reedy voice: one continuous tone that slides into
+' each note (no gaps), with vibrato swelling on the held ones.
+'   notes: name+octave:seconds, e.g. "A4:.06 E5:.2"
+Sub sndSlur (buf() As Single, notes As String, vol As Single)
+    Dim i As Long, j As Long, at As Long, n As Long, q As Long, tok As String, total As Long
+    Dim hz As Single, prevHz As Single, f As Single, ph As Double, env As Single, t As Single
+    Dim slide As Long, k As Long
+    slide = Int(.018 * SND_RATE)
+    total = UBound(buf) + 1
+    Do
+        tok = wordOf(notes, j)
+        If tok = "" Then Exit Do
+        q = InStr(tok, ":")
+        k = noteSemi(Left$(tok, q - 1)) + 12 * (Val(Mid$(tok, q - 1, 1)) + 1)
+        hz = 440 * 2 ^ ((k - 69) / 12)
+        If prevHz = 0 Then prevHz = hz * .94 ' scoop up into the first note
+        n = Int(Val(Mid$(tok, q + 1)) * SND_RATE)
+        For i = 0 To n - 1
+            If at >= total Then Exit Do
+            t = i / SND_RATE
+            f = hz
+            If i < slide Then f = prevHz + (hz - prevHz) * i / slide
+            env = t * 8: If env > 1 Then env = 1
+            f = f * (1 + .012 * Sin(t * 38) * env) ' vibrato swells in
+            ph = ph + 6.283185307 * f / SND_RATE
+            env = 1
+            If at < 200 Then env = at / 200
+            buf(at) = (Sin(ph) + .45 * Sin(2 * ph) + .3 * Sin(3 * ph) + .12 * Sin(5 * ph)) * env * vol
+            at = at + 1
+        Next
+        prevHz = hz: j = j + 1
+    Loop
+    ' fade the last note out over what's left of the buffer
+    n = total - at
+    For i = 0 To n - 1
+        t = i / SND_RATE
+        f = hz * (1 + .012 * Sin((t + .25) * 38))
+        ph = ph + 6.283185307 * f / SND_RATE
+        buf(at + i) = (Sin(ph) + .45 * Sin(2 * ph) + .3 * Sin(3 * ph) + .12 * Sin(5 * ph)) * vol * (1 - i / n) ^ 2
     Next
 End Sub
 
