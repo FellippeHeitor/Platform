@@ -4040,7 +4040,7 @@ Function sfxPath$ (n As String)
     sfxPath$ = "sfx/" + n + ".wav"
 $If WEB Then
     If Not _FileExists(sfxPath$) Then
-        sfxPath$ = "https://cdn.jsdelivr.net/gh/FellippeHeitor/Platform@cbc9daf06a869eb5f0a1a75c54126a9c205fc563/sfx/" + n + ".wav"
+        sfxPath$ = "https://cdn.jsdelivr.net/gh/FellippeHeitor/Platform@d8ada9791a7e1614e36590ebc62043976615a974/sfx/" + n + ".wav"
     End If
 $End If
 End Function
