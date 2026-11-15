@@ -178,7 +178,7 @@ Function searchLevel& (path() As _Byte, pathLen As Long, failX As Single)
                     ' same tick, so it's part of the key, with the held vine's
                     ' swing and how far behind the furthest point the hero is.
                     k1 = Int(s.y + 1000) * 1024 + Int(s.yv * 5 + 512) + Int(s.back * 2) * 2097152
-                    k2 = Int(s.x) + s.vineCool * 8192 + (s.vineT Mod VINE_PERIOD) * 131072
+                    k2 = Int(s.x) + s.vineCool * 8192 + (Int(s.vineT) Mod VINE_PERIOD) * 131072 + (Int(s.relOff * 2) And 63) * 20000000
                     k3 = s.gemMask * 16384 + (Int(s.clock * 2) And 16383)
                     k4 = s.airJumps + s.mode * 64 + s.coyote * 256 + s.buffer * 4096 + (s.grounded And 1) * 65536 + (s.heldPrev And 1) * 131072 + (s.jumping And 1) * 262144 + (s.openMask And 15) * 524288 + s.vine * 8388608
                     hv = (k1 * 7919 + k2 * 13 + k3 * 17 + k4 * 31) And (HASH_SIZE - 1)

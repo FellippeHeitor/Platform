@@ -75,6 +75,8 @@ Const VINE_LEN = 150 ' vine length, pixels
 Const VINE_AMP = 0.7 ' swing amplitude, radians
 Const VINE_PERIOD = 150 ' ticks per full swing (all vines swing together)
 Const VINE_COOL = 15 ' ticks after letting go before a vine can be caught again
+Const LIQUID_TOP = 6 ' top rows of a lava or tar pool, drawn moving each frame
+Const VINE_EASE = .05 ' how quickly a let-go vine's swing speed follows its target
 Const MAX_VINES = 20
 Const CROC_PERIOD = 120 ' crocodiles snap together: jaws shut, then open
 Const CROC_OPEN_AT = 80 ' jaws dangerous from this tick of the cycle on
@@ -159,7 +161,10 @@ Type HeroState
     facing As Long ' 1 right, -1 left
     vine As Long ' vine being held (index into vineAX/vineAY), 0 = none
     vineCool As Long ' ticks until a vine can be caught again
-    vineT As Long ' the held vine's own swing tick (it keeps swinging while the world waits)
+    vineT As Single ' the held vine's own swing tick (it keeps swinging while the world waits)
+    relVine As Long ' vine just let go of, easing back into step with the others (0 = none)
+    relOff As Single ' its swing tick minus the world's (see easeVine)
+    relSpd As Single ' how fast its swing tick runs, in ticks per tick
     clock As Single ' world time: what drives crocs, toggles and the other vines (see simStep)
     back As Single ' how far behind the furthest point reached, in ticks of running
 End Type
@@ -233,6 +238,7 @@ Dim Shared deathsTotal As Long, levelDeaths As Long, attempt As Long
 Dim Shared bestPct(1 To 99) As Long, lastPct As Long, deathCause As Long
 Const SND_RATE = 22050 ' sample rate of the generated sounds
 Dim Shared titleLevel As Long, sounds(1 To 10) As Long
+Dim Shared music(0 To 4) As Long ' one looping tune per theme (see makeMusicIfMissing)
 Dim Shared popText As String, popHint As String, popLife As Long, popColor As _Unsigned Long
 Dim Shared teleT As Long, teleFromX As Single, teleFromY As Single
 Dim Shared teleCamFrom As Single, teleCamTo As Single
@@ -324,6 +330,7 @@ Do
         acc = acc - STEP_DT
     Loop
 
+    updateMusic
     render
     _Display
     _Limit 120
@@ -927,6 +934,9 @@ Sub initHero (h As HeroState)
     h.vine = 0
     h.vineCool = 0
     h.vineT = 0
+    h.relVine = 0
+    h.relOff = 0
+    h.relSpd = 0
     h.clock = 0
     h.back = 0
 End Sub
@@ -939,8 +949,8 @@ End Sub
 ' be had you run straight there, and what's ahead is down to timed jumps.
 ' Without vines this is exactly one world tick per tick (= simTick).
 Sub simStep (h As HeroState, held As Long)
-    Dim x0 As Single, wasVine As Long
-    x0 = h.x: wasVine = h.vine
+    Dim x0 As Single, wasVine As Long, c0 As Single
+    x0 = h.x: wasVine = h.vine: c0 = h.clock
     worldTick = Int(h.clock + .001) + 1
     simMove h, held
     If freeMove Or (wasVine = 0 And h.vine = 0 And h.back <= 0) Then
@@ -949,6 +959,22 @@ Sub simStep (h As HeroState, held As Long)
         h.back = h.back - (h.x - x0) / RUN_SPEED
         If h.back < 0 Then h.clock = h.clock - h.back: h.back = 0
     End If
+    If h.relVine > 0 Then easeVine h, h.clock - c0
+End Sub
+
+' A vine you let go of was swinging at its own pace, out of step with the
+' world. Snapping it back would jerk it away, so it keeps swinging and its
+' speed eases off or picks up until it's back in step (a few seconds at most),
+' then it follows the world clock like the rest. dw is how far the world
+' clock moved this tick.
+Sub easeVine (h As HeroState, dw As Single)
+    Dim pull As Single
+    pull = -h.relOff * .03
+    If pull > .6 Then pull = .6
+    If pull < -.6 Then pull = -.6
+    h.relSpd = h.relSpd + (dw + pull - h.relSpd) * VINE_EASE
+    h.relOff = h.relOff + h.relSpd - dw
+    If Abs(h.relOff) < .5 And Abs(h.relSpd - dw) < .05 Then h.relVine = 0: h.relOff = 0
 End Sub
 
 Sub simMove (h As HeroState, held As Long)
@@ -1120,17 +1146,17 @@ End Sub
 ' tick: angle = VINE_AMP * sin(2 pi tick / VINE_PERIOD). That's the world
 ' tick, except for the vine being held, which goes on from where it was
 ' caught at its own pace (hero.vineT).
-Function vineAngle! (tick As Long)
+Function vineAngle! (tick As Single)
     vineAngle! = VINE_AMP * Sin(6.2831853 * tick / VINE_PERIOD)
 End Function
 
 ' (Two functions rather than a Sub with output parameters: QBJS passes
 ' numbers to subs by value.)
-Function vineTipX! (v As Long, tick As Long)
+Function vineTipX! (v As Long, tick As Single)
     vineTipX! = vineAX(v) + VINE_LEN * Sin(vineAngle(tick))
 End Function
 
-Function vineTipY! (v As Long, tick As Long)
+Function vineTipY! (v As Long, tick As Single)
     vineTipY! = vineAY(v) + VINE_LEN * Cos(vineAngle(tick))
 End Function
 
@@ -1141,10 +1167,27 @@ Sub hangOnVine (h As HeroState)
     h.xv = 0
 End Sub
 
-' Let go: keep the vine's speed, plus a little hop.
+' Where vine v is in its swing: the world tick tick0 (worldTick in the
+' simulation, one less when drawing), except for a vine that's still easing
+' back into step after being let go (see easeVine).
+Function vinePhase! (h As HeroState, v As Long, tick0 As Long)
+    If v = h.relVine Then
+        vinePhase! = h.clock + h.relOff + (tick0 - Int(h.clock + .001))
+    Else
+        vinePhase! = tick0
+    End If
+End Function
+
+' Let go: keep the vine's speed, plus a little hop. The vine swings on from
+' where it is and eases back into step with the others.
 Sub letGoVine (h As HeroState)
+    Dim o As Single
     h.yv = vineTipY(h.vine, h.vineT) - vineTipY(h.vine, h.vineT - 1) - 5
     h.xv = vineTipX(h.vine, h.vineT) - vineTipX(h.vine, h.vineT - 1)
+    ' how far ahead of the world clock it is, the short way round the swing
+    o = h.vineT - (h.clock + 1)
+    o = o - VINE_PERIOD * Int(o / VINE_PERIOD + .5)
+    h.relVine = h.vine: h.relOff = o: h.relSpd = 1
     h.vine = 0
     h.vineCool = VINE_COOL
     h.buffer = 0
@@ -1153,14 +1196,17 @@ End Sub
 
 ' Catch a vine whose tip is at the hero's hands.
 Sub catchVine (h As HeroState)
-    Dim v As Long, tx As Single, ty As Single
+    Dim v As Long, tx As Single, ty As Single, k As Single
     If h.vineCool > 0 Or nVines = 0 Then Exit Sub
     For v = 1 To nVines
-        tx = vineTipX(v, worldTick): ty = vineTipY(v, worldTick)
-        If Abs(h.x + HERO_W / 2 - tx) < 16 Then
+        ' a vine you let go of is out of reach until it's back in step: it
+        ' swings along with you, and catching it again mid-air isn't the idea
+        k = vinePhase(h, v, worldTick)
+        tx = vineTipX(v, k): ty = vineTipY(v, k)
+        If v <> h.relVine And Abs(h.x + HERO_W / 2 - tx) < 16 Then
             If h.y > ty - 18 And h.y < ty + 16 Then
                 h.vine = v
-                h.vineT = worldTick
+                h.vineT = k
                 hangOnVine h
                 simEvents = simEvents Or EV_GRAB
                 Exit Sub
@@ -1833,16 +1879,16 @@ Sub bakeLevel
                 Case T_SPIKEDOWN
                     _PutImage (x, y), sprSpikeDown
                 Case T_LAVA
+                    ' the top of a pool is left open here: drawLiquidTop
+                    ' draws its moving surface every frame
+                    i = 0
+                    If liquidSurface(c, r) Then i = LIQUID_TOP
                     If th.jungle Then ' tar pit
-                        Line (x, y)-Step(TILE - 1, TILE - 1), _RGB32(34, 30, 36), BF
-                        If tileAt(c, r - 1) <> T_LAVA Then
-                            Line (x, y)-Step(TILE - 1, 2), _RGB32(86, 80, 92), BF
-                            Line (x + 4 + hash01(c, r) * 12, y + 5)-Step(3, 2), _RGB32(70, 64, 76), BF
-                        End If
+                        Line (x, y + i)-Step(TILE - 1, TILE - 1 - i), _RGB32(34, 30, 36), BF
+                        If i Then Line (x + 4 + hash01(c, r) * 12, y + 10)-Step(3, 2), _RGB32(70, 64, 76), BF
                     Else
-                        Line (x, y)-Step(TILE - 1, TILE - 1), _RGB32(214, 64, 30), BF
-                        Line (x, y + 3 + hash01(c, r) * 4)-Step(TILE - 1, 3), _RGB32(255, 168, 48), BF
-                        If tileAt(c, r - 1) <> T_LAVA Then Line (x, y)-Step(TILE - 1, 2), _RGB32(255, 220, 120), BF
+                        Line (x, y + i)-Step(TILE - 1, TILE - 1 - i), _RGB32(214, 64, 30), BF
+                        Line (x, y + 9 + hash01(c, r) * 4)-Step(TILE - 1, 3), _RGB32(255, 168, 48), BF
                     End If
             End Select
         Next
@@ -1942,7 +1988,9 @@ Sub drawDynamicTiles (cx As Long, oy As Long)
     For c = c1 To c2
         For r = 0 To ROWS - 1
             t = tileAt(c, r)
-            If t >= T_GEM Then
+            If t = T_LAVA Then
+                If liquidSurface(c, r) Then drawLiquidTop c * TILE - cx, r * TILE + oy, c, r
+            ElseIf t >= T_GEM Then
                 x = c * TILE - cx: y = r * TILE + oy
                 Select Case t
                     Case T_GEM
@@ -1995,6 +2043,54 @@ Sub drawDynamicTiles (cx As Long, oy As Long)
     Next
 End Sub
 
+' Lava or tar with open air above it: the surface of a pool.
+Function liquidSurface& (c As Long, r As Long)
+    Dim t As Long
+    t = tileAt(c, r - 1)
+    liquidSurface& = (t <> T_LAVA) And (t <> T_GROUND)
+End Function
+
+' The surface of a lava or tar pool, like the water: two slow sine waves
+' across it, a bright crust on top, and now and then a bubble that swells and
+' pops. Tar is darker, slower and lazier than lava. (Looks only; the tile is
+' deadly from its top edge whatever the waves are doing.)
+Sub drawLiquidTop (x As Single, y As Single, c As Long, r As Long)
+    Dim i As Long, w As Long, px As Single, s As Single, top As Single
+    Dim body As _Unsigned Long, crust As _Unsigned Long, glowC As _Unsigned Long, b As Long, period As Long
+    Dim bx As Single, rad As Single
+    If th.jungle Then
+        body = _RGB32(34, 30, 36): crust = _RGB32(86, 80, 92): glowC = _RGB32(58, 52, 62): period = 200
+    Else
+        body = _RGB32(214, 64, 30): crust = _RGB32(255, 220, 120): glowC = _RGB32(255, 168, 48): period = 130
+    End If
+    For i = 0 To TILE - 1 Step 2
+        w = 2: If i + w > TILE Then w = TILE - i
+        px = c * TILE + i
+        If th.jungle Then
+            s = Sin(px / 16 + frameCount / 26) * 1.3 + Sin(px / 7 - frameCount / 37) * .5
+        Else
+            s = Sin(px / 13 + frameCount / 15) * 1.7 + Sin(px / 6 - frameCount / 10) * .6
+        End If
+        top = y + 3 + s
+        Line (x + i, top)-(x + i + w - 1, y + LIQUID_TOP), body, BF
+        Line (x + i, top + 2)-(x + i + w - 1, top + 3), glowC, BF
+        Line (x + i, top)-(x + i + w - 1, top + 1), crust, BF
+    Next
+    ' a bubble: swells for 24 ticks, then pops into a few droplets
+    b = (frameCount + Int(hash01(c, r) * 997)) Mod period
+    bx = x + 5 + hash01(r, c) * 14
+    If b < 24 Then
+        rad = 1 + b / 24 * 3
+        fillCircle bx, y + 3, rad, crust
+        fillCircle bx, y + 3, rad - 1, glowC
+    ElseIf b < 34 Then
+        b = b - 24
+        Line (bx - 2 - b * .5, y + 1 - b * .6 + b * b * .06)-Step(1, 1), crust, BF
+        Line (bx + 1 + b * .5, y + 1 - b * .6 + b * b * .06)-Step(1, 1), crust, BF
+        Line (bx, y - b * .9 + b * b * .08)-Step(1, 1), crust, BF
+    End If
+End Sub
+
 ' Mode pickups, each with its own shape so they read at a glance:
 ' jetpack = orange orb with a pack and flame, wings = green orb with wings
 ' sticking out, on foot = pale blue arrow pointing down at the ground.
@@ -2036,11 +2132,11 @@ End Function
 ' Vines: a rope from the anchor to the tip, a few leaves, and the branch.
 Sub drawVines (cx As Long, oy As Long)
     Dim v As Long, tx As Single, ty As Single, ax As Single, ay As Single, i As Long, f As Single
-    Dim lx As Single, ly As Single, k As Long
+    Dim lx As Single, ly As Single, k As Single
     For v = 1 To nVines
         ax = vineAX(v) - cx: ay = vineAY(v) + oy
         If ax > -200 And ax < SW + 200 Then
-            k = Int(hero.clock + .001)
+            k = vinePhase(hero, v, Int(hero.clock + .001))
             If v = hero.vine Then k = hero.vineT
             tx = vineTipX(v, k) - cx: ty = vineTipY(v, k) + oy
             Line (ax - 1, ay)-(tx - 1, ty), _RGB32(60, 84, 30)
@@ -3161,6 +3257,33 @@ $Else
 $End If
         sounds(i) = _SndOpen(sfxPath(names(i)))
     Next
+    For i = 0 To 4
+$If WEB Then
+$Else
+        makeMusicIfMissing i
+$End If
+        music(i) = _SndOpen(sfxPath("music" + LTrim$(Str$(i))))
+    Next
+End Sub
+
+' The current level's theme tune loops while you play (and on the title
+' screen, for the level picked there). Dying doesn't restart it. M mutes it
+' along with everything else.
+Sub updateMusic
+    Static playing As Long ' theme + 1 of the tune playing, 0 = none
+    Dim want As Long
+    want = 0
+    If Not muted And Not headless And gameState <> ST_END Then
+        If music(levelTheme) > 0 Then want = levelTheme + 1
+    End If
+$If WEB Then
+    ' browsers only start sound after a click or key, so wait for the first level
+    If gameState = ST_TITLE And playing = 0 Then want = 0
+$End If
+    If want = playing Then Exit Sub
+    If playing > 0 Then _SndStop music(playing - 1)
+    If want > 0 Then _SndLoop music(want - 1)
+    playing = want
 End Sub
 
 $If WEB Then
@@ -3207,6 +3330,206 @@ Sub makeSoundIfMissing (n As String)
     sndSaveWav buf(), f
 End Sub
 
+' Theme tunes: a melody over a chord per bar, from which a bass line and an
+' arpeggio are made with a per-theme rhythm, plus soft drums. Eight bars of
+' eighth notes that loop seamlessly (note tails wrap round to the start).
+'   melody: note:eighths, e.g. "F#5:2" (b for flat, R for a rest)
+'   chords: one per bar, e.g. "Am", "Eb"
+'   patterns, one char per eighth (- holds): bass R root, F fifth, O octave;
+'   arpeggio 0 1 2 = chord tones; drums K kick, H hat, B both
+Sub makeMusicIfMissing (n As Long)
+    Dim buf(0) As Single, f As String, bpm As Single, chords As String, mel As String
+    Dim bassPat As String, arpPat As String, drumPat As String, lead As Long, leadVol As Single
+    Dim e8 As Long, total As Long, bar As Long, st As Long, ch As String, d As Long, k As Long
+    Dim root As Long, minor As Long, tok As String, nt As Long, at8 As Long, q As Long
+    Dim i As Long, peak As Single
+    f = "sfx/music" + LTrim$(Str$(n)) + ".wav"
+    If _FileExists(f) Then Exit Sub
+    If Not _DirExists("sfx") Then MkDir "sfx"
+    Select Case n
+        Case 0 ' meadow: bright and bouncy
+            bpm = 132: lead = 1: leadVol = .26
+            chords = "C G Am F C F Dm G"
+            mel = "E5:2 G5:2 C6:2 G5:2 D5:2 G5:2 B5:3 A5:1 C6:2 B5:1 A5:1 E5:4 F5:2 A5:2 G5:2 F5:2 "
+            mel = mel + "E5:2 G5:2 C6:3 D6:1 C6:2 A5:2 F5:4 D5:2 F5:2 A5:2 C6:2 B5:4 G5:2 R:2"
+            bassPat = "R-F-O-F-": arpPat = "0121-121": drumPat = "K-H-K-H-"
+        Case 1 ' dusk: mellow, minor
+            bpm = 104: lead = 1: leadVol = .24
+            chords = "Am F C G Am F Dm E"
+            mel = "A4:3 C5:1 E5:4 F5:2 E5:2 C5:4 E5:3 D5:1 C5:2 G4:2 B4:2 D5:2 G4:4 "
+            mel = mel + "A4:2 E5:2 A5:3 G5:1 F5:3 E5:1 C5:4 D5:2 F5:2 A5:2 F5:2 G#5:4 E5:2 B4:2"
+            bassPat = "R---F---": arpPat = "0-1-2-1-": drumPat = "K-H---H-"
+        Case 2 ' desert: plucked, a little exotic
+            bpm = 120: lead = 3: leadVol = .3
+            chords = "D Eb D Cm D Eb Cm D"
+            mel = "D5:1 Eb5:1 F#5:2 A5:2 F#5:2 G5:2 F#5:1 Eb5:1 D5:4 A4:2 D5:2 F#5:2 A5:2 G5:3 Eb5:1 C5:4 "
+            mel = mel + "D5:1 Eb5:1 F#5:2 G5:2 A5:2 Bb5:2 A5:1 G5:1 F#5:2 Eb5:2 G5:2 Eb5:2 C5:2 Eb5:2 D5:6 R:2"
+            bassPat = "R--R--F-": arpPat = "--------": drumPat = "K--K--H-"
+        Case 3 ' night: slow bells
+            bpm = 92: lead = 4: leadVol = .22
+            chords = "Em C G D Em C Am B"
+            mel = "B4:4 E5:4 G5:6 E5:2 D5:4 B4:4 A4:6 R:2 B4:2 E5:2 G5:2 B5:2 C6:4 G5:4 A5:3 G5:1 E5:4 D#5:6 R:2"
+            bassPat = "R-------": arpPat = "0-2-1-2-": drumPat = "--------"
+        Case 4 ' jungle: marimba and drums
+            bpm = 116: lead = 5: leadVol = .3
+            chords = "Am G Am G F G Am E"
+            mel = "A4:1 C5:1 R:1 E5:1 D5:1 C5:1 A4:2 G4:1 B4:1 R:1 D5:1 E5:2 D5:2 A4:1 C5:1 R:1 E5:1 G5:1 E5:1 D5:2 "
+            mel = mel + "D5:1 E5:1 D5:1 B4:1 G4:4 A4:1 C5:1 F5:2 E5:1 C5:1 A4:2 B4:1 D5:1 G5:2 E5:1 D5:1 B4:2 "
+            mel = mel + "C5:1 E5:1 A5:2 G5:1 E5:1 D5:1 C5:1 B4:2 G#4:2 E4:2 R:2"
+            bassPat = "R--RF-R-": arpPat = "--------": drumPat = "K-HK-HH-"
+        Case Else
+            Exit Sub
+    End Select
+
+    e8 = Int(60 / bpm / 2 * SND_RATE) ' samples per eighth
+    total = 64 * e8
+    ReDim buf(0 To total - 1) As Single
+
+    For bar = 0 To 7
+        tok = wordOf(chords, bar)
+        root = noteSemi(tok): minor = (Right$(tok, 1) = "m")
+        For st = 0 To 7
+            at8 = (bar * 8 + st) * e8
+            ' how long until the next step in this bar that isn't "-"
+            d = 1
+            Do While st + d < 8
+                If Mid$(bassPat, st + d + 1, 1) <> "-" Then Exit Do
+                d = d + 1
+            Loop
+            ch = Mid$(bassPat, st + 1, 1)
+            k = 36 + root
+            If ch = "F" Then k = k + 7
+            If ch = "O" Then k = k + 12
+            If ch <> "-" Then musNote buf(), at8, k, d * e8, .3, 2
+            ch = Mid$(arpPat, st + 1, 1)
+            If ch <> "-" Then
+                d = 1
+                Do While st + d < 8
+                    If Mid$(arpPat, st + d + 1, 1) <> "-" Then Exit Do
+                    d = d + 1
+                Loop
+                k = 60 + root
+                If ch = "1" Then k = k + 4 + minor ' minor is -1 when true
+                If ch = "2" Then k = k + 7
+                musNote buf(), at8, k, d * e8, .11, 3
+            End If
+            ch = Mid$(drumPat, st + 1, 1)
+            If ch = "K" Or ch = "B" Then musNote buf(), at8, 0, e8, .32, 6
+            If ch = "H" Or ch = "B" Then musNote buf(), at8, 0, e8, .05, 7
+        Next
+    Next
+
+    at8 = 0: i = 0
+    Do
+        tok = wordOf(mel, i)
+        If tok = "" Then Exit Do
+        q = InStr(tok, ":")
+        d = Val(Mid$(tok, q + 1))
+        If Left$(tok, 1) <> "R" Then
+            nt = noteSemi(Left$(tok, q - 1)) + 12 * (Val(Mid$(tok, q - 1, 1)) + 1)
+            musNote buf(), at8 * e8, nt, d * e8, leadVol, lead
+        End If
+        at8 = at8 + d: i = i + 1
+    Loop
+
+    ' quieter than the sound effects
+    For i = 0 To total - 1
+        If Abs(buf(i)) > peak Then peak = Abs(buf(i))
+    Next
+    If peak > 0 Then
+        For i = 0 To total - 1: buf(i) = buf(i) * .17 / peak: Next
+    End If
+    sndSaveWav buf(), f
+End Sub
+
+' Word i (from 0) of a space-separated list, "" past the end.
+Function wordOf$ (s As String, i As Long)
+    Dim a As Long, b As Long, n As Long
+    a = 1
+    For n = 1 To i
+        a = InStr(a, s, " ")
+        If a = 0 Then Exit Function
+        a = a + 1
+    Next
+    b = InStr(a, s, " ")
+    If b = 0 Then b = Len(s) + 1
+    wordOf$ = Mid$(s, a, b - a)
+End Function
+
+' Semitone of a note or chord name above C: "C" 0, "F#" 6, "Bb" 10.
+Function noteSemi& (s As String)
+    Dim k As Long
+    k = InStr("C D EF G A B", Left$(s, 1)) - 1
+    If Mid$(s, 2, 1) = "#" Then k = k + 1
+    If Mid$(s, 2, 1) = "b" Then k = k - 1
+    noteSemi& = (k + 12) Mod 12
+End Function
+
+' One note into a looping buffer, starting at sample st and held for dur
+' samples (plucked sounds ring on regardless). k is a MIDI note number.
+' Instruments: 1 soft lead (a few harmonics, slight vibrato), 2 round bass,
+' 3 pluck, 4 bell, 5 marimba, 6 kick, 7 hat (filtered noise).
+Sub musNote (buf() As Single, st As Long, k As Long, dur As Long, vol As Single, inst As Long)
+    Dim i As Long, n As Long, total As Long, t As Single, env As Single, v As Single
+    Dim hz As Single, ph As Double, f As Single, rel As Long, nz As Single, prev As Single
+    total = UBound(buf) + 1
+    hz = 440 * 2 ^ ((k - 69) / 12)
+    rel = Int(.08 * SND_RATE)
+    Select Case inst
+        Case 1, 2: n = dur + rel
+        Case 3: n = Int(.5 * SND_RATE)
+        Case 4: n = Int(1.6 * SND_RATE)
+        Case 5: n = Int(.6 * SND_RATE)
+        Case 6: n = Int(.16 * SND_RATE)
+        Case 7: n = Int(.05 * SND_RATE)
+    End Select
+    For i = 0 To n - 1
+        t = i / SND_RATE
+        Select Case inst
+            Case 1
+                f = hz * (1 + .004 * Sin(t * 31) * maxf(0, t - .15))
+                ph = ph + 6.283185307 * f / SND_RATE
+                v = Sin(ph) + .3 * Sin(2 * ph) + .12 * Sin(3 * ph)
+                env = .6 + .4 * Exp(-t * 6)
+                If i < 300 Then env = env * i / 300
+                If i > dur Then env = env * (1 - (i - dur) / rel)
+            Case 2
+                ph = ph + 6.283185307 * hz / SND_RATE
+                v = Sin(ph) - Sin(3 * ph) / 9 + Sin(5 * ph) / 25
+                env = .5 + .5 * Exp(-t * 5)
+                If i < 200 Then env = env * i / 200
+                If i > dur Then env = env * (1 - (i - dur) / rel)
+            Case 3
+                ph = ph + 6.283185307 * hz / SND_RATE
+                v = Sin(ph) + .25 * Sin(2 * ph) * Exp(-t * 12)
+                env = Exp(-t * 7)
+                If i < 80 Then env = env * i / 80
+            Case 4
+                ph = ph + 6.283185307 * hz / SND_RATE
+                v = Sin(ph) + .3 * Sin(2.76 * ph) * Exp(-t * 4) + .12 * Sin(5.4 * ph) * Exp(-t * 9)
+                env = Exp(-t * 2.4)
+                If i < 120 Then env = env * i / 120
+            Case 5
+                ph = ph + 6.283185307 * hz / SND_RATE
+                v = Sin(ph) + .35 * Sin(4 * ph) * Exp(-t * 30)
+                env = Exp(-t * 7)
+                If i < 60 Then env = env * i / 60
+            Case 6
+                f = 45 + 75 * Exp(-t * 30)
+                ph = ph + 6.283185307 * f / SND_RATE
+                v = Sin(ph)
+                env = Exp(-t * 18)
+                If i < 40 Then env = env * i / 40
+            Case 7
+                nz = Rnd * 2 - 1
+                v = nz - prev: prev = nz
+                env = Exp(-t * 70)
+        End Select
+        env = env * (1 - i / n) ' always fade to silence, no clicks
+        buf((st + i) Mod total) = buf((st + i) Mod total) + v * env * vol
+    Next
+End Sub
+
 Sub sndNew (buf() As Single, seconds As Single)
     ReDim buf(0 To Int(seconds * SND_RATE) - 1) As Single
 End Sub
@@ -3232,11 +3555,12 @@ End Sub
 ' 16-bit mono WAV.
 Sub sndSaveWav (buf() As Single, fileName As String)
     Dim i As Long, v As Long, d As String, h As String, ff As Long
+    d = Space$(2 * (UBound(buf) + 1))
     For i = 0 To UBound(buf)
         v = buf(i) * 32767
         If v > 32767 Then v = 32767
         If v < -32768 Then v = -32768
-        d = d + MKI$(v)
+        Mid$(d, 2 * i + 1, 2) = MKI$(v)
     Next
     h = "RIFF" + MKL$(36 + Len(d)) + "WAVE"
     h = h + "fmt " + MKL$(16) + MKI$(1) + MKI$(1) + MKL$(SND_RATE) + MKL$(SND_RATE * 2) + MKI$(2) + MKI$(16)
