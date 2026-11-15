@@ -255,6 +255,8 @@ Dim Shared polyX(1 To 8) As Single, polyY(1 To 8) As Single, polyN As Long, poly
 Dim Shared particles(1 To 300) As Particle
 Dim Shared clouds(1 To 8) As Cloud
 Dim Shared camX As Single, shake As Single, squash As Single, frameCount As Long
+Dim Shared covScale As Single ' pixels per sprite unit while drawing a sprite (see cov)
+Const HERO_PAD = 4 ' margin around a big hero sprite (see makeHeroFrame)
 Dim Shared gameState As Long, stateTicks As Long, muted As Long
 Dim Shared deathsTotal As Long, levelDeaths As Long, attempt As Long
 Dim Shared bestPct(1 To 99) As Long, lastPct As Long, deathCause As Long
@@ -271,7 +273,8 @@ Dim Shared vineAX(1 To MAX_VINES) As Single, vineAY(1 To MAX_VINES) As Single, n
 ' where the previous attempt ended, shown as a dotted line (-1 = none)
 Dim Shared markX As Single, markPct As Long, deathX As Single, deathPending As Long
 ' progress log: levels reached and best %, by level name (see loadProgress)
-Const PROGRESS_FILE = "leapline.log"
+Dim Shared progressFile As String ' where the progress log is kept (see useDataFolder)
+progressFile = "leapline.log"
 ReDim Shared levelNames(1 To 1) As String
 Dim Shared progName(1 To 99) As String, progBest(1 To 99) As Long, progCount As Long
 Dim Shared progScore(1 To 99) As Long
@@ -279,17 +282,25 @@ Dim Shared textKey(1 To TEXT_CACHE) As String, textImg(1 To TEXT_CACHE) As Long,
 
 Randomize Timer
 jetFuelFull = JET_FUEL: fuelCanAmt = FUEL_CAN: wingFull = WING_TICKS
+covScale = 1
 countLevels
 
 $If HEADLESS = 1 Then
     runLevelCheck ' see levelcheck.bas
 $End If
 
+$If WEB Then
+$Else
+    useDataFolder
+$End If
 Screen _NewImage(SW, SH, 32)
 _Title "Leap Line"
 initThemes
 initHeroSprites
 initSprites
+$If ART = 1 Then
+    makeArt ' see tools/art.bas
+$End If
 loadSounds
 loadProgress
 seedProgress Command$
@@ -323,7 +334,11 @@ Do
     k = _KeyHit
     Select Case k
         Case 27
+            ' (in a browser there's nothing to quit to, so there ESC just stays on the title)
+$If WEB Then
+$Else
             If gameState = ST_TITLE Then System
+$End If
             gameState = ST_TITLE
             loadLevel titleLevel
         Case 70, 102 ' F
@@ -747,6 +762,29 @@ End Function
 ' The progress log is a text file next to the game: one "name|best%" line
 ' per level played, plus "|score" once it has a free-move best score. Levels are matched by name, so adding or reordering
 ' levels keeps what you've earned. (In QBJS the file only lasts the session.)
+' The progress log and the generated sounds (sfx/) live in the current
+' folder, which QB64-PE sets to the program's own folder. A macOS .app
+' bundle (see tools/release.sh) ships the sounds in Contents/Resources/sfx,
+' so the game runs from there, but nothing may be written inside the bundle
+' (that breaks its signature, and a downloaded app may run from a read-only
+' copy), so its progress log goes to ~/Library/Application Support/Leap Line.
+$If WEB Then
+$Else
+Sub useDataFolder
+    Dim exe As String, p As Long, d As String
+    exe = Command$(0)
+    p = InStr(exe, ".app/Contents/MacOS/")
+    If p = 0 Then Exit Sub
+    d = Left$(exe, p + 13) + "Resources"
+    If _DirExists(d + "/sfx") Then ChDir d
+    d = Environ$("HOME") + "/Library/Application Support"
+    If Not _DirExists(d) Then Exit Sub
+    d = d + "/Leap Line"
+    If Not _DirExists(d) Then MkDir d
+    progressFile = d + "/leapline.log"
+End Sub
+$End If
+
 Sub loadProgress
     Dim i As Long, ff As Long, ln As String, p As Long, n As Long, nm As String, p2 As Long
     ReDim levelNames(1 To levelCount) As String
@@ -754,9 +792,9 @@ Sub loadProgress
         levelNames(n) = levelNameOf(n)
     Next
     progCount = 0
-    If Not _FileExists(PROGRESS_FILE) Then Exit Sub
+    If Not _FileExists(progressFile) Then Exit Sub
     ff = FreeFile
-    Open PROGRESS_FILE For Input As #ff
+    Open progressFile For Input As #ff
     Do While Not EOF(ff)
         Line Input #ff, ln
         p = InStr(ln, "|")
@@ -787,7 +825,7 @@ Sub recordProgress (n As Long)
     If progBest(i) = bestPct(n) And progScore(i) = bestScore(n) Then Exit Sub ' nothing new to save
     progBest(i) = bestPct(n): progScore(i) = bestScore(n)
     ff = FreeFile
-    Open PROGRESS_FILE For Output As #ff
+    Open progressFile For Output As #ff
     For i = 1 To progCount
         ln = progName(i) + "|" + LTrim$(Str$(progBest(i)))
         If progScore(i) > 0 Then ln = ln + "|" + LTrim$(Str$(progScore(i)))
@@ -1810,7 +1848,7 @@ Sub initHeroSprites
     Dim pose As Long, q As Long
     For pose = 0 To 8
         For q = 0 To HERO_SQ - 1
-            heroImg(pose * HERO_SQ + q) = makeHeroFrame(pose, (q - HERO_SQ \ 2) * .2)
+            heroImg(pose * HERO_SQ + q) = makeHeroFrame(pose, (q - HERO_SQ \ 2) * .2, 1)
             rawWrites heroImg(pose * HERO_SQ + q), FALSE
         Next
     Next
@@ -1839,8 +1877,10 @@ Function heroLight! (px As Single, py As Single, cx As Single, cy As Single, rx 
     heroLight! = lam
 End Function
 
-' s > 0 squashes (wide, short), s < 0 stretches (tall, thin).
-Function makeHeroFrame& (pose As Long, s As Single)
+' s > 0 squashes (wide, short), s < 0 stretches (tall, thin). The sprite is
+' 28 x 28 times sc. sc > 1 draws a big, sharp hero for the icon and cover,
+' with a margin of HERO_PAD units all round so the tails and feet aren't cut.
+Function makeHeroFrame& (pose As Long, s As Single, sc As Long)
     Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single, e As Single
     Dim ink As _Unsigned Long, red As _Unsigned Long, redDark As _Unsigned Long
     Dim bx As Single, by As Single, rx As Single, ry As Single, bob As Single, lt As Single
@@ -1878,10 +1918,13 @@ Function makeHeroFrame& (pose As Long, s As Single)
     ey = by + .3 * (ry / 7.6) + eyeDy
     e1x = bx + rx * .2: e2x = bx + rx * .6
 
-    img = newSprite(28, GY)
-    For py = 0 To GY - 1
-        For px = 0 To 27
-            X = px + .5: Y = py + .5
+    Dim pad As Long
+    If sc > 1 Then pad = HERO_PAD
+    img = newSprite((28 + pad * 2) * sc, (GY + pad * 2) * sc)
+    covScale = sc
+    For py = 0 To (GY + pad * 2) * sc - 1
+        For px = 0 To (28 + pad * 2) * sc - 1
+            X = (px + .5) / sc - pad: Y = (py + .5) / sc - pad
             pxBegin
             ' headband tails, back one first
             d = sdFeather(X, Y, kx, ky, a2, 6, 1.5)
@@ -1918,6 +1961,7 @@ Function makeHeroFrame& (pose As Long, s As Single)
             pxEnd px, py
         Next
     Next
+    covScale = 1
     _Dest 0
     makeHeroFrame& = img
 End Function
@@ -2702,7 +2746,10 @@ End Sub
 
 ' How much of a pixel a shape covers, from the signed distance to its edge
 ' (negative = inside). This one-pixel ramp is what makes the edges smooth.
-Function cov! (d As Single)
+' Distances are in sprite units, covScale pixels each (normally 1).
+Function cov! (dd As Single)
+    Dim d As Single
+    d = dd * covScale
     If d <= -.5 Then
         cov! = 1
     ElseIf d >= .5 Then

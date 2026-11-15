@@ -138,6 +138,22 @@ how far a player who never presses gets:
 
 Run it after editing a level.
 
+## Releasing on itch.io
+
+    tools/release.sh 1.0
+
+builds everything to `dist/` (ignored by git): `LeapLine-web.zip` (the QBJS
+browser build, with the sounds alongside), `LeapLine-mac.zip` (a signed,
+not notarized `Leap Line.app`; on Linux it makes `LeapLine-linux.zip`
+instead). It also redraws the store art in `itch/art` (cover, banner and
+app icon) with `tools/art.bas`, which uses the game's own sprite code. It needs QB64-PE (`QB64PE=`, default
+`~/git/QB64pe`), a QBJS checkout (`QBJS=`, default `~/git/qbjs`) and node.
+What to fill in on the itch.io page is in `itch/page.md`.
+
+The `.app` runs from its `Contents/Resources` folder, where the WAVs are
+shipped, and keeps its progress log in
+`~/Library/Application Support/Leap Line`.
+
 ## Where it started
 
 Leap Line grew out of a little experiment from February 2021, called
