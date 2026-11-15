@@ -90,6 +90,7 @@ Const DIE_SPIKE = 2
 Const DIE_LAVA = 3
 Const DIE_WATER = 4
 Const DIE_CROC = 5
+Const DIE_TIME = 6 ' free move: the countdown ran out
 
 ' simulation events, for effects and sound (bit flags)
 Const EV_JUMP = 1
@@ -118,6 +119,7 @@ Const SFX_MODE = 7
 Const SFX_DIE = 8
 Const SFX_WIN = 9
 Const SFX_ARRIVE = 10
+Const SFX_STAR = 11 ' 11 .. 18: one per combo step, rising
 
 ' glow sprite colours
 Const GLOW_CYAN = 1
@@ -218,6 +220,24 @@ Dim Shared clearance As Single
 ' free-move mode (F on the title): walk left/right yourself, walls only block.
 ' A toy for playing around; the levels are designed for auto-running.
 Dim Shared freeMove As Long, moveDir As Long, doorPress As Long
+' Free move is played for score against the clock: a countdown per level
+' (running out ends the attempt), stars to collect, chained for a combo,
+' and points for the time left at the goal. None of it touches simStep, so
+' the level checker doesn't see it.
+Const MAX_STARS = 150
+Const STAR_PTS = 10 ' times the combo
+Const COMBO_TICKS = 80 ' to grab the next star and keep the combo going
+Const COMBO_MAX = 8
+Const ALL_STARS_BONUS = 500
+Dim Shared starX(1 To MAX_STARS) As Single, starY(1 To MAX_STARS) As Single
+Dim Shared starTaken(1 To MAX_STARS) As Long, nStars As Long, starsGot As Long
+Dim Shared score As Long, combo As Long, comboTicks As Long
+Dim Shared timeLimit As Long, timeLeft As Long ' ticks
+Dim Shared timeBonus As Long, allBonus As Long, bestScore(1 To 99) As Long, newBest As Long
+Const FLOATS = 12 ' "+30" labels rising from collected stars
+Dim Shared floatX(1 To FLOATS) As Single, floatY(1 To FLOATS) As Single
+Dim Shared floatT(1 To FLOATS) As String, floatLife(1 To FLOATS) As Long, floatNext As Long
+Dim Shared sprStar As Long
 
 ' presentation
 Dim Shared themes(0 To 4) As Theme, th As Theme
@@ -237,7 +257,7 @@ Dim Shared gameState As Long, stateTicks As Long, muted As Long
 Dim Shared deathsTotal As Long, levelDeaths As Long, attempt As Long
 Dim Shared bestPct(1 To 99) As Long, lastPct As Long, deathCause As Long
 Const SND_RATE = 22050 ' sample rate of the generated sounds
-Dim Shared titleLevel As Long, sounds(1 To 10) As Long
+Dim Shared titleLevel As Long, sounds(1 To 18) As Long
 Dim Shared music(0 To 4) As Long ' one looping tune per theme (see makeMusicIfMissing)
 Dim Shared victorySong As Long ' played once on winning a level (see makeVictoryIfMissing)
 Dim Shared popText As String, popHint As String, popLife As Long, popColor As _Unsigned Long
@@ -252,6 +272,7 @@ Dim Shared markX As Single, markPct As Long, deathX As Single, deathPending As L
 Const PROGRESS_FILE = "leapline.log"
 ReDim Shared levelNames(1 To 1) As String
 Dim Shared progName(1 To 99) As String, progBest(1 To 99) As Long, progCount As Long
+Dim Shared progScore(1 To 99) As Long
 Dim Shared textKey(1 To TEXT_CACHE) As String, textImg(1 To TEXT_CACHE) As Long, textNext As Long
 
 Randomize Timer
@@ -570,6 +591,7 @@ Sub updateGame (held As Long)
     prevHeld = held
     stateTicks = stateTicks + 1
     frameCount = frameCount + 1
+    If freeMove Then updateFloats
 
     Select Case gameState
         Case ST_TITLE
@@ -593,6 +615,12 @@ Sub updateGame (held As Long)
                 simEvents = 0
                 simStep hero, held
                 handleEvents
+                If freeMove And hero.alive And Not hero.won Then
+                    collectStars
+                    timeLeft = timeLeft - 1
+                    If timeLeft <= 5 * 60 And timeLeft > 0 And timeLeft Mod 60 = 0 Then sfx SFX_SWITCH
+                    If timeLeft <= 0 Then timeLeft = 0: hero.alive = FALSE: hero.cause = DIE_TIME
+                End If
                 If simEvents And EV_TELEPORT Then
                     If freeMove Then startTeleport prevX + hero.xv, prevY Else startTeleport prevX + RUN_SPEED, prevY
                 End If
@@ -613,6 +641,14 @@ Sub updateGame (held As Long)
                     stateTicks = 0
                 ElseIf hero.won Then
                     bestPct(levelNum) = 100
+                    newBest = FALSE
+                    If freeMove Then
+                        timeBonus = timeLeft \ 6 ' a point per tenth of a second
+                        allBonus = 0
+                        If starsGot = nStars And nStars > 0 Then allBonus = ALL_STARS_BONUS
+                        score = score + timeBonus + allBonus
+                        If score > bestScore(levelNum) Then bestScore(levelNum) = score: newBest = TRUE
+                    End If
                     recordProgress levelNum
                     burst goalX, hero.y, 60, _RGB32(255, 230, 90)
                     If victorySong <= 0 Then sfx SFX_WIN ' the song replaces it
@@ -668,6 +704,7 @@ Sub resetAttempt
     recordProgress levelNum ' playing a level unlocks it on the title screen
     initHero hero
     simTick = 0
+    resetStars
     squash = 0
     teleT = 0
     popLife = 0
@@ -706,10 +743,10 @@ Function progIndex& (nm As String)
 End Function
 
 ' The progress log is a text file next to the game: one "name|best%" line
-' per level played. Levels are matched by name, so adding or reordering
+' per level played, plus "|score" once it has a free-move best score. Levels are matched by name, so adding or reordering
 ' levels keeps what you've earned. (In QBJS the file only lasts the session.)
 Sub loadProgress
-    Dim i As Long, ff As Long, ln As String, p As Long, n As Long, nm As String
+    Dim i As Long, ff As Long, ln As String, p As Long, n As Long, nm As String, p2 As Long
     ReDim levelNames(1 To levelCount) As String
     For n = 1 To levelCount
         levelNames(n) = levelNameOf(n)
@@ -725,30 +762,34 @@ Sub loadProgress
             progCount = progCount + 1
             progName(progCount) = Left$(ln, p - 1)
             progBest(progCount) = Val(Mid$(ln, p + 1))
+            p2 = InStr(p + 1, ln, "|")
+            If p2 > 0 Then progScore(progCount) = Val(Mid$(ln, p2 + 1)) Else progScore(progCount) = 0
         End If
     Loop
     Close #ff
     For n = 1 To levelCount
         i = progIndex(levelNames(n))
-        If i > 0 Then bestPct(n) = progBest(i)
+        If i > 0 Then bestPct(n) = progBest(i): bestScore(n) = progScore(i)
     Next
 End Sub
 
 Sub recordProgress (n As Long)
-    Dim i As Long, ff As Long
+    Dim i As Long, ff As Long, ln As String
     If headless Then Exit Sub
     i = progIndex(levelNames(n))
     If i = 0 Then
         If progCount >= 99 Then Exit Sub
         progCount = progCount + 1: i = progCount
-        progName(i) = levelNames(n): progBest(i) = -1
+        progName(i) = levelNames(n): progBest(i) = -1: progScore(i) = 0
     End If
-    If progBest(i) = bestPct(n) Then Exit Sub ' nothing new to save
-    progBest(i) = bestPct(n)
+    If progBest(i) = bestPct(n) And progScore(i) = bestScore(n) Then Exit Sub ' nothing new to save
+    progBest(i) = bestPct(n): progScore(i) = bestScore(n)
     ff = FreeFile
     Open PROGRESS_FILE For Output As #ff
     For i = 1 To progCount
-        Print #ff, progName(i) + "|" + LTrim$(Str$(progBest(i)))
+        ln = progName(i) + "|" + LTrim$(Str$(progBest(i)))
+        If progScore(i) > 0 Then ln = ln + "|" + LTrim$(Str$(progScore(i)))
+        Print #ff, ln
     Next
     Close #ff
 End Sub
@@ -1466,6 +1507,8 @@ Sub loadLevel (n As Long)
     Next
     pairTeleporters
     groupSwitches
+    placeStars
+    resetStars
 
     initHero hero
     If Not headless Then
@@ -1476,6 +1519,191 @@ Sub loadLevel (n As Long)
     End If
     camX = 0
     attempt = 0
+End Sub
+
+' Free-move stars, placed from the level's own shape so every level gets
+' them without editing its data. Walking left to right, follow the floor the
+' auto-runner would be on: of the surfaces in each column (ground or plank
+' with room above), take the one nearest the current floor, as long as it's
+' no more than 3 tiles up (about a jump). A star floats at body height on
+' every 4th column of floor, and over each gap a short arc of stars traces
+' a jump across it. Nothing goes on or next to spikes, tar, lava or crocs.
+' The countdown is set here too: the time it takes the auto-runner, half as
+' much again and ten seconds more, rounded up to 5 s.
+Sub placeStars
+    Dim c As Long, r As Long, pathRow As Long, best As Long, gapStart As Long
+    Dim c0 As Long, c1 As Long, i As Long, n As Long, h As Long, rr As Long
+    Dim t As Single
+    nStars = 0
+    c0 = Int(startX / TILE) + 3
+    c1 = Int(goalX / TILE) - 1
+    pathRow = Int((startY + HERO_H) / TILE) + 1 ' the floor under the start
+    gapStart = -1
+    For c = Int(startX / TILE) To c1
+        best = -1
+        For r = 1 To ROWS - 1
+            If floorCell(c, r) Then
+                If r >= pathRow - 3 Then
+                    If best < 0 Then
+                        best = r
+                    ElseIf Abs(r - pathRow) < Abs(best - pathRow) Then
+                        best = r
+                    End If
+                End If
+            End If
+        Next
+        If best < 0 Then
+            If gapStart < 0 Then gapStart = c
+        Else
+            If gapStart >= 0 Then
+                ' arc over the gap from gapStart to c - 1, peaking 2 tiles up
+                n = c - gapStart
+                If n >= 2 And n <= 9 And gapStart > c0 Then
+                    rr = pathRow
+                    If best < rr Then rr = best
+                    For i = 0 To n - 1
+                        t = (i + 1) / (n + 1)
+                        h = Int(4 * t * (1 - t) * 2 + .5)
+                        addStar gapStart + i, rr - 1 - h
+                    Next
+                ElseIf n > 9 Then
+                    ' too far to jump: a flying stretch. A star every 3rd
+                    ' column, in the middle of the tallest open space there.
+                    For i = 1 To n - 2 Step 3
+                        r = openMiddle(gapStart + i)
+                        If r > 0 Then addStar gapStart + i, r
+                    Next
+                End If
+                gapStart = -1
+            End If
+            pathRow = best
+            If c >= c0 And c Mod 4 = 0 Then addStar c, best - 1
+        End If
+    Next
+    timeLimit = ((goalX - startX) / RUN_SPEED * 1.5 + 600)
+    timeLimit = -Int(-timeLimit / 300) * 300
+End Sub
+
+' Middle row of the longest run of empty tiles in column c (0 = none).
+Function openMiddle& (c As Long)
+    Dim r As Long, rn As Long, bestRun As Long, bestEnd As Long
+    For r = 1 To ROWS - 2
+        If tileAt(c, r) = T_EMPTY Then
+            rn = rn + 1
+            If rn > bestRun Then bestRun = rn: bestEnd = r
+        Else
+            rn = 0
+        End If
+    Next
+    If bestRun >= 3 Then openMiddle& = bestEnd - bestRun \ 2
+End Function
+
+' Ground or plank at (c, r) with open air above it to stand in.
+Function floorCell& (c As Long, r As Long)
+    Dim t As Long
+    floorCell& = FALSE
+    t = tileAt(c, r)
+    If t <> T_GROUND And t <> T_PLANK Then Exit Function
+    If tileAt(c, r - 1) <> T_EMPTY Then Exit Function
+    floorCell& = TRUE
+End Function
+
+Function dangerTile& (c As Long, r As Long)
+    Select Case tileAt(c, r)
+        Case T_SPIKE, T_SPIKEDOWN, T_LAVA, T_TOGGLEA, T_TOGGLEB, T_CROC
+            dangerTile& = TRUE
+        Case Else
+            dangerTile& = FALSE
+    End Select
+End Function
+
+Sub addStar (c As Long, r As Long)
+    Dim dc As Long, dr As Long
+    If nStars >= MAX_STARS Or r < 1 Then Exit Sub
+    If tileAt(c, r) <> T_EMPTY Then Exit Sub
+    For dc = -1 To 1
+        For dr = -1 To 1
+            If dangerTile(c + dc, r + dr) Then Exit Sub
+        Next
+    Next
+    nStars = nStars + 1
+    starX(nStars) = c * TILE + TILE / 2
+    starY(nStars) = r * TILE + TILE / 2
+End Sub
+
+' A new attempt: all stars back, score and clock reset.
+Sub resetStars
+    Dim i As Long
+    For i = 1 To nStars: starTaken(i) = FALSE: Next
+    For i = 1 To FLOATS: floatLife(i) = 0: Next
+    starsGot = 0: score = 0: combo = 0: comboTicks = 0
+    timeLeft = timeLimit
+End Sub
+
+' Once per tick in free move: pick up stars the hero touches. One grabbed
+' within COMBO_TICKS of the last raises the combo (and the chime's pitch).
+Sub collectStars
+    Dim i As Long, hx As Single, hy As Single, pts As Long
+    If comboTicks > 0 Then comboTicks = comboTicks - 1 Else combo = 0
+    hx = hero.x + HERO_W / 2: hy = hero.y + HERO_H / 2
+    For i = 1 To nStars
+        If Not starTaken(i) Then
+            If Abs(starX(i) - hx) < 15 And Abs(starY(i) - hy) < 18 Then
+                starTaken(i) = TRUE
+                starsGot = starsGot + 1
+                If combo < COMBO_MAX Then combo = combo + 1
+                comboTicks = COMBO_TICKS
+                pts = STAR_PTS * combo
+                score = score + pts
+                ring starX(i), starY(i), _RGB32(255, 225, 110)
+                sfx SFX_STAR + combo - 1
+                If combo > 1 Then addFloat starX(i), starY(i) - 14, "+" + LTrim$(Str$(pts)) + " x" + LTrim$(Str$(combo)) Else addFloat starX(i), starY(i) - 14, "+" + LTrim$(Str$(pts))
+            End If
+        End If
+    Next
+End Sub
+
+Sub addFloat (x As Single, y As Single, t As String)
+    floatNext = floatNext Mod FLOATS + 1
+    floatX(floatNext) = x: floatY(floatNext) = y
+    floatT(floatNext) = t: floatLife(floatNext) = 45
+End Sub
+
+Sub updateFloats
+    Dim i As Long
+    For i = 1 To FLOATS
+        If floatLife(i) > 0 Then floatLife(i) = floatLife(i) - 1: floatY(i) = floatY(i) - .6
+    Next
+End Sub
+
+Sub drawFloats (cx As Long, oy As Long)
+    Dim i As Long, a As Long
+    For i = 1 To FLOATS
+        If floatLife(i) > 0 Then
+            a = 255
+            If floatLife(i) < 15 Then a = 255 * floatLife(i) / 15
+            textAt floatT(i), floatX(i) - cx - _PrintWidth(floatT(i)) / 2, floatY(i) + oy, _RGBA32(255, 235, 140, a)
+        End If
+    Next
+End Sub
+
+' Stars bob and spin (squashed sideways), each a little out of step.
+Sub drawStars (cx As Long, oy As Long)
+    Dim i As Long, x As Single, y As Single, sx As Single, p As Single
+    For i = 1 To nStars
+        If Not starTaken(i) Then
+            x = starX(i) - cx
+            If x > -20 And x < SW + 20 Then
+                y = starY(i) + oy + Sin(frameCount / 10 + i) * 2
+                sx = Cos(frameCount / 14 + i * .7)
+                If sx < 0 Then sx = -sx
+                If sx < .15 Then sx = .15
+                p = .6 + Sin(frameCount / 9 + i) * .06
+                putCentered glow(GLOW_YELLOW), x, y, p, p
+                putCentered sprStar, x, y, sx, 1
+            End If
+        End If
+    Next
 End Sub
 
 ' Each switch opens the barriers after it, up to the next switch: number the
@@ -1912,6 +2140,7 @@ Sub render
     _PutImage (ox, oy)-(ox + SW - 1, oy + SH - 1), levelImg, 0, (cx, 0)-(cx + SW - 1, SH - 1)
     drawVines cx - ox, oy
     drawDynamicTiles cx - ox, oy
+    If freeMove Then drawStars cx - ox, oy
     If gameState = ST_PLAY Or gameState = ST_DEAD Then drawAttemptMark cx - ox, oy
     If gameState <> ST_TITLE And hero.alive Then
         If teleT > 0 Then
@@ -1932,6 +2161,7 @@ Sub render
         End If
     End If
     drawParticles cx - ox, oy
+    If freeMove Then drawFloats cx - ox, oy
     drawWater cx
     If gameState = ST_PLAY And popLife > 0 Then drawPopup cx
 
@@ -2396,6 +2626,7 @@ Sub initSprites
     sprPortal = makePortal
     sprBarrier = makeBarrier
     sprFuel = makeFuel
+    sprStar = makeStar: rawWrites sprStar, FALSE
     glow(GLOW_CYAN) = makeGlow(_RGB32(120, 230, 255))
     glow(GLOW_ORANGE) = makeGlow(_RGB32(255, 150, 60))
     glow(GLOW_GREEN) = makeGlow(_RGB32(130, 240, 150))
@@ -2631,6 +2862,50 @@ Function makeGem&
     Next
     _Dest 0
     makeGem& = img
+End Function
+
+' Five-pointed gold star: the inner pentagon plus a triangle per point,
+' darker on the right half of each point for a folded look.
+Function makeStar&
+    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single, e As Single
+    Dim k As Long, a As Single, ox(0 To 4) As Single, oy(0 To 4) As Single
+    Dim ix(0 To 4) As Single, iy(0 To 4) As Single, j As Long, side As Long, ds As Single
+    For k = 0 To 4
+        a = -1.5707963 + k * 1.2566371
+        ox(k) = 10 + 9.5 * Cos(a): oy(k) = 10.5 + 9.5 * Sin(a)
+        a = a + .6283185
+        ix(k) = 10 + 4 * Cos(a): iy(k) = 10.5 + 4 * Sin(a)
+    Next
+    img = newSprite(20, 20)
+    For py = 0 To 19
+        For px = 0 To 19
+            X = px + .5: Y = py + .5
+            setPoly5 ix(0), iy(0), ix(1), iy(1), ix(2), iy(2), ix(3), iy(3), ix(4), iy(4)
+            d = sdPoly(X, Y): side = 0
+            For k = 0 To 4
+                j = (k + 4) Mod 5
+                setPoly3 ox(k), oy(k), ix(j), iy(j), ix(k), iy(k)
+                e = sdPoly(X, Y)
+                If e < d Then d = e
+                ' which half of the point: left or right of its centre line
+                If e < .5 Then
+                    ds = (X - 10) * (oy(k) - 10.5) - (Y - 10.5) * (ox(k) - 10)
+                    If ds > 0 Then side = 1
+                End If
+            Next
+            pxBegin
+            pxLayer _RGB32(150, 90, 10), cov(d)
+            If side Then
+                pxLayer _RGB32(240, 170, 30), cov(d + 1)
+            Else
+                pxLayer _RGB32(255, 222, 80), cov(d + 1)
+            End If
+            pxLayer _RGBA32(255, 255, 255, 230), cov(sdCircle(X, Y, 8, 7.5, 1.3))
+            pxEnd px, py
+        Next
+    Next
+    _Dest 0
+    makeStar& = img
 End Function
 
 ' Soft round glow, strongest in the middle.
@@ -3191,18 +3466,50 @@ Sub drawHud
         Line (bx + bw * bestPct(levelNum) / 100, 9)-Step(1, 13), _RGB32(255, 210, 60), BF
     End If
     If muted Then textAt "muted", SW - 10 - _PrintWidth("muted"), 26, _RGB32(255, 255, 255)
+    If freeMove Then
+        textAt "Score:" + Str$(score) + "   Stars:" + Str$(starsGot) + " /" + Str$(nStars), 10, 26, _RGB32(255, 225, 110)
+        drawCountdown
+    End If
 End Sub
+
+' Free-move countdown, under the progress bar: m:ss, with tenths and in red
+' for the last ten seconds (pulsing on each second).
+Sub drawCountdown
+    Dim s As String, t As Long, c As _Unsigned Long, sc As Single
+    t = timeLeft
+    If t > 10 * 60 Then
+        s = timeText(t + 59) ' round up, so it reads 0:10 until it goes red
+        c = _RGB32(255, 255, 255): sc = 2
+    Else
+        s = LTrim$(Str$(t \ 60)) + "." + LTrim$(Str$((t Mod 60) \ 6))
+        c = _RGB32(255, 90, 80): sc = 2 + (t Mod 60) / 60
+        If gameState <> ST_PLAY Then sc = 2
+    End If
+    bigText s, SW / 2, 40, sc, c
+End Sub
+
+' ticks as m:ss
+Function timeText$ (t As Long)
+    Dim sec As Long
+    sec = t \ 60
+    timeText$ = LTrim$(Str$(sec \ 60)) + ":" + Right$("0" + LTrim$(Str$(sec Mod 60)), 2)
+End Function
 
 Sub drawTitle
     dimScreen 90
     bigText "LEAP LINE", SW / 2, 110, 6, _RGB32(255, 255, 255)
     centerText "Tap to hop, hold to jump higher. Don't stop, don't fall.", 175, _RGB32(255, 255, 255)
     centerText "<  " + levelLabel(titleLevel) + "  >", 250, _RGB32(255, 230, 120)
-    If bestPct(titleLevel) > 0 Then centerText "best:" + Str$(bestPct(titleLevel)) + "%", 272, _RGB32(255, 255, 255)
+    If freeMove And bestScore(titleLevel) > 0 Then
+        centerText "best score:" + Str$(bestScore(titleLevel)), 272, _RGB32(255, 225, 110)
+    ElseIf bestPct(titleLevel) > 0 Then
+        centerText "best:" + Str$(bestPct(titleLevel)) + "%", 272, _RGB32(255, 255, 255)
+    End If
     If levelCount > 1 Then centerText "levels played:" + Str$(unlockedCount) + " of" + Str$(levelCount), 292, _RGBA32(255, 255, 255, 160)
     If (frameCount \ 30) Mod 2 = 0 Then centerText "SPACE / click / tap to play", 320, _RGB32(255, 255, 255)
     If freeMove Then
         centerText "F free move: ON  (arrows / A D walk, SPACE jump, up / W enter portals)", 360, _RGB32(150, 250, 170)
+        centerText "Beat the clock and grab the stars: chain them for a combo", 378, _RGB32(255, 225, 110)
     Else
         centerText "F free move: off", 360, _RGBA32(255, 255, 255, 150)
     End If
@@ -3219,23 +3526,39 @@ Sub drawDeadScreen
         Case DIE_LAVA
             If th.jungle Then s = "Stuck in the tar!" Else s = "Too hot!"
         Case DIE_CROC: s = "Chomp! Wait for the jaws to shut, or stand on the head."
+        Case DIE_TIME: s = "Time's up!"
         Case DIE_WATER
             If th.hotSea Then s = "Too hot!" Else s = "Splash!"
     End Select
     centerText s, 225, _RGB32(255, 230, 120)
-    centerText "best:" + Str$(bestPct(levelNum)) + "%    attempt" + Str$(attempt), 255, _RGB32(255, 255, 255)
+    If freeMove Then
+        centerText "score:" + Str$(score) + "   best:" + Str$(bestScore(levelNum)) + "   attempt" + Str$(attempt), 255, _RGB32(255, 255, 255)
+    Else
+        centerText "best:" + Str$(bestPct(levelNum)) + "%    attempt" + Str$(attempt), 255, _RGB32(255, 255, 255)
+    End If
     If stateTicks > 15 Then centerText "SPACE / click to retry", 300, _RGB32(255, 255, 255)
 End Sub
 
 Sub drawWonScreen
+    Dim s As String
     dimScreen 90
     bigText "COMPLETE!", SW / 2, 140, 5, _RGB32(255, 230, 90)
     centerText "Deaths on this level:" + Str$(levelDeaths), 210, _RGB32(255, 255, 255)
+    If freeMove Then
+        s = "Stars:" + Str$(starsGot) + " /" + Str$(nStars) + "   time bonus: +" + LTrim$(Str$(timeBonus))
+        If allBonus > 0 Then s = s + "   all stars: +" + LTrim$(Str$(allBonus))
+        centerText s, 232, _RGB32(255, 255, 255)
+        If newBest Then
+            centerText "Score:" + Str$(score) + "   NEW BEST!", 250, _RGB32(255, 225, 110)
+        Else
+            centerText "Score:" + Str$(score) + "   best:" + Str$(bestScore(levelNum)), 250, _RGB32(255, 225, 110)
+        End If
+    End If
     If stateTicks > 40 Then
         If levelNum < levelCount Then
-            centerText "SPACE / click for level" + Str$(levelNum + 1), 260, _RGB32(255, 255, 255)
+            centerText "SPACE / click for level" + Str$(levelNum + 1), 280, _RGB32(255, 255, 255)
         Else
-            centerText "SPACE / click to finish", 260, _RGB32(255, 255, 255)
+            centerText "SPACE / click to finish", 280, _RGB32(255, 255, 255)
         End If
     End If
 End Sub
@@ -3251,12 +3574,13 @@ End Sub
 ' A missing file just means that effect stays silent.
 
 Sub loadSounds
-    Dim names(1 To 10) As String, i As Long
+    Dim names(1 To 18) As String, i As Long
     names(1) = "jump": names(2) = "airjump": names(3) = "flap"
     names(4) = "gem": names(5) = "switch": names(6) = "teleport"
     names(7) = "mode": names(8) = "die": names(9) = "win"
     names(10) = "arrive"
-    For i = 1 To 10
+    For i = 1 To 8: names(SFX_STAR + i - 1) = "star" + LTrim$(Str$(i)): Next
+    For i = 1 To 18
 $If WEB Then
 $Else
         makeSoundIfMissing names(i)
@@ -3316,7 +3640,7 @@ $Else
 ' Each sound is a sum of soft sine "voices": a pitch glide with a smooth
 ' attack and an exponential fade, kept quiet (peaks well below full scale).
 Sub makeSoundIfMissing (n As String)
-    Dim buf(0) As Single, f As String
+    Dim buf(0) As Single, f As String, f1 As Single
     f = "sfx/" + n + ".wav"
     If _FileExists(f) Then Exit Sub
     If Not _DirExists("sfx") Then MkDir "sfx"
@@ -3340,6 +3664,11 @@ Sub makeSoundIfMissing (n As String)
             sndNew buf(), .25: sndVoice buf(), 660, 660, 0, .08, .1: sndVoice buf(), 880, 880, .06, .08, .1: sndVoice buf(), 1100, 1100, .12, .12, .1
         Case "die"
             sndNew buf(), .4: sndVoice buf(), 420, 110, 0, .36, .24: sndVoice buf(), 210, 70, .02, .34, .1
+        Case "star1", "star2", "star3", "star4", "star5", "star6", "star7", "star8"
+            ' a bell going up the major pentatonic scale, one step per combo
+            f1 = Val(Mid$("10471175131915681760209323492637", (Val(Right$(n, 1)) - 1) * 4 + 1, 4))
+            sndNew buf(), .3: sndVoice buf(), f1, f1, 0, .25, .1: sndVoice buf(), f1 * 2, f1 * 2, 0, .12, .03
+            sndVoice buf(), f1 * 1.5, f1 * 1.5, .04, .2, .04
         Case "win"
             sndNew buf(), .7: sndVoice buf(), 523, 523, 0, .25, .14: sndVoice buf(), 659, 659, .1, .25, .14
             sndVoice buf(), 784, 784, .2, .25, .14: sndVoice buf(), 1046, 1046, .3, .38, .14
