@@ -3620,12 +3620,12 @@ End Sub
 ' 16-bit mono WAV.
 Sub sndSaveWav (buf() As Single, fileName As String)
     Dim i As Long, v As Long, d As String, h As String, ff As Long
-    d = Space$(2 * (UBound(buf) + 1))
+    ' (appending rather than Mid$(d, ...) = ..., which QBJS can't compile)
     For i = 0 To UBound(buf)
         v = buf(i) * 32767
         If v > 32767 Then v = 32767
         If v < -32768 Then v = -32768
-        Mid$(d, 2 * i + 1, 2) = MKI$(v)
+        d = d + MKI$(v)
     Next
     h = "RIFF" + MKL$(36 + Len(d)) + "WAVE"
     h = h + "fmt " + MKL$(16) + MKI$(1) + MKI$(1) + MKL$(SND_RATE) + MKL$(SND_RATE * 2) + MKI$(2) + MKI$(16)
