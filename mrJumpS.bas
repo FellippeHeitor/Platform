@@ -2053,13 +2053,17 @@ End Sub
 ' _PutImage mirrors in QB64-PE but not in QBJS, so we keep real copies.)
 Function mirrorSprite& (src As Long)
     Dim img As Long, x As Long, y As Long, w As Long, h As Long, os As Long
+    Dim c As _Unsigned Long
     w = _Width(src): h = _Height(src)
     os = _Source
     img = newSprite(w, h)
     _Source src
     For y = 0 To h - 1
         For x = 0 To w - 1
-            PSet (w - 1 - x, y), Point(x, y)
+            ' skip clear pixels: the new image is already clear, and QBJS
+            ' takes PSet colour 0 as palette black rather than transparent
+            c = Point(x, y)
+            If alpha32(c) > 0 Then PSet (w - 1 - x, y), c
         Next
     Next
     _Source os
