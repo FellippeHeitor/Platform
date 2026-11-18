@@ -257,6 +257,16 @@ Dim Shared clouds(1 To 8) As Cloud
 Dim Shared camX As Single, shake As Single, squash As Single, frameCount As Long
 Dim Shared covScale As Single ' pixels per sprite unit while drawing a sprite (see cov)
 Const HERO_PAD = 4 ' margin around a big hero sprite (see makeHeroFrame)
+' loading screen and intro (see showLoading, playIntro)
+Const BIG_SC = 6 ' the big hero: pixels per sprite unit
+Const BIG_ROW0 = (HERO_PAD + 8) * BIG_SC ' rows of the big hero that have
+Const BIG_ROW1 = (HERO_PAD + 30) * BIG_SC ' anything in them
+Const BIG_FEET = 290 ' screen y of the big hero's feet
+Const LOAD_STEPS = 37 ' loadTick calls before the game is ready
+Const LOAD_MIN = .9 ' seconds the big hero takes to paint, at the least
+Const INTRO_LEN = 1.9 ' seconds
+Dim Shared bigIdle As Long, bigRise As Long, loadDone As Long, paintedRows As Long
+Dim Shared loadStart As Double, loading As Long
 Dim Shared gameState As Long, stateTicks As Long, muted As Long
 Dim Shared deathsTotal As Long, levelDeaths As Long, attempt As Long
 Dim Shared bestPct(1 To 99) As Long, lastPct As Long, deathCause As Long
@@ -295,17 +305,34 @@ $Else
 $End If
 Screen _NewImage(SW, SH, 32)
 _Title "Leap Line"
+' the loading screen paints the big hero as the steps below call loadTick
+bigIdle = heroCanvas(BIG_SC)
+_Dest 0
+paintedRows = BIG_ROW0
+loadStart = Timer(.001)
+loading = TRUE
+showLoading 0
 initThemes
-initHeroSprites
+initHeroSprites ' 9 ticks
 initSprites
+loadTick
 $If ART = 1 Then
     makeArt ' see tools/art.bas
 $End If
-loadSounds
+bigRise = makeHeroFrame(6, -.3, BIG_SC)
+rawWrites bigRise, FALSE
+loadTick
+loadSounds ' 25 ticks
 loadProgress
 seedProgress Command$
 titleLevel = 1
 loadLevel titleLevel
+loadTick
+Do While paintedRows < BIG_ROW1 ' all loaded: finish painting, if it's still going
+    showLoading 1
+Loop
+loading = FALSE
+playIntro
 gameState = ST_TITLE
 
 Dim held As Long, heldFrame As Long, pressLatch As Long, k As Long, upPrev As Long, doorLatch As Long
@@ -762,6 +789,167 @@ End Function
 ' The progress log is a text file next to the game: one "name|best%" line
 ' per level played, plus "|score" once it has a free-move best score. Levels are matched by name, so adding or reordering
 ' levels keeps what you've earned. (In QBJS the file only lasts the session.)
+'--- loading screen and intro
+
+' One more loading step done: paint more of the big hero and show it.
+Sub loadTick
+    If Not loading Then Exit Sub
+    loadDone = loadDone + 1
+    showLoading loadDone / LOAD_STEPS
+End Sub
+
+' The loading screen: the big hero painted from the top down, as far as
+' fraction f of the loading has got (but taking LOAD_MIN seconds at least,
+' so a fast start still shows it), with the scan line where it's painting.
+Sub showLoading (f As Single)
+    Dim target As Long, cap As Single, w As Long, x As Long, y As Long, i As Long, hw As Single
+    target = BIG_ROW0 + (BIG_ROW1 - BIG_ROW0) * f
+    cap = (Timer(.001) - loadStart) / LOAD_MIN
+    If cap < 0 Then cap = 1 ' midnight
+    If target > BIG_ROW0 + (BIG_ROW1 - BIG_ROW0) * cap Then target = BIG_ROW0 + (BIG_ROW1 - BIG_ROW0) * cap
+    If target > BIG_ROW1 Then target = BIG_ROW1
+    If target > paintedRows Then
+        rawWrites bigIdle, TRUE
+        paintHero bigIdle, 8, 0, BIG_SC, paintedRows, target - 1
+        rawWrites bigIdle, FALSE
+        paintedRows = target
+    End If
+
+    _Dest 0
+    Line (0, 0)-(SW - 1, SH - 1), _RGB32(30, 26, 46), BF
+    w = _Width(bigIdle)
+    x = SW / 2 - (14.5 + HERO_PAD) * BIG_SC: y = BIG_FEET - (28 + HERO_PAD) * BIG_SC
+    ' a soft shadow to stand on
+    For i = -4 To 4
+        hw = 54 * Sqr(1 - (i / 5) ^ 2)
+        Line (SW / 2 - hw, BIG_FEET + i)-(SW / 2 + hw, BIG_FEET + i), _RGBA32(0, 0, 0, 70), BF
+    Next
+    _PutImage (x, y)-(x + w - 1, y + paintedRows - 1), bigIdle, 0, (0, 0)-(w - 1, paintedRows - 1)
+    If paintedRows < BIG_ROW1 Then
+        Line (x + 24, y + paintedRows)-(x + w - 25, y + paintedRows), _RGBA32(255, 230, 120, 200)
+        Line (x + 24, y + paintedRows + 1)-(x + w - 25, y + paintedRows + 2), _RGBA32(255, 230, 120, 60), BF
+    End If
+    ' progress bar
+    Line (SW / 2 - 90, 340)-(SW / 2 + 90, 343), _RGBA32(255, 255, 255, 40), BF
+    Line (SW / 2 - 90, 340)-(SW / 2 - 90 + 180 * minf(f, (paintedRows - BIG_ROW0) / (BIG_ROW1 - BIG_ROW0)), 343), _RGB32(255, 230, 120), BF
+    centerText "loading", 360, _RGBA32(255, 255, 255, 150)
+    _Display
+    _Limit 240 ' (and lets the browser draw, in QBJS)
+End Sub
+
+' After loading: the hero crouches and leaps off the top of the screen,
+' leaving its shadow behind; then the dark opens up from where it jumped,
+' a growing circle that shows the title screen's world, and the title
+' drops in. Any key or click skips it.
+Sub playIntro
+    Dim t0 As Double, t As Single, k As Long, w As Long, h As Long, img As Long
+    Dim sx As Single, sy As Single, lift As Single, u As Single, p As Single
+    Dim feet As Single, ty As Single, x As Single, i As Long, alive As Long
+    Dim jumped As Long, landed As Long, r As Single, dy As Single, y As Long
+    t0 = Timer(.001)
+    Do
+        t = Timer(.001) - t0
+        If t < 0 Then t = t + 86400
+        If t > INTRO_LEN Then Exit Do
+        While _MouseInput: Wend
+        k = _KeyHit
+        If k > 0 Or _MouseButton(1) Or _KeyDown(32) Then Exit Do
+
+        ' crouch from 0.25 s, leap at 0.5 s (fast at first, so it's gone by 0.9 s)
+        img = bigIdle: sx = 1: sy = 1: lift = 0
+        If t < .5 Then
+            p = (t - .25) / .25
+            If p > 0 Then sx = 1 + .16 * p * p: sy = 1 - .18 * p * p
+        Else
+            If Not jumped Then sfx SFX_JUMP: jumped = TRUE
+            u = t - .5
+            img = bigRise
+            lift = 400 * u + 1300 * u * u
+            p = u / .15
+            If p > 1 Then p = 1
+            sx = .86 + .14 * p: sy = 1.16 - .16 * p
+        End If
+        feet = BIG_FEET - lift
+
+        ' the world (no hero, no title text), seen through a hole in the dark
+        ' that opens from the take-off spot once the hero has gone
+        r = 0
+        If t > .8 Then
+            p = (t - .8) / .45
+            If p > 1 Then p = 1
+            r = 520 * p * p
+            alive = hero.alive: hero.alive = FALSE
+            gameState = -1
+            render
+            gameState = ST_TITLE: hero.alive = alive
+        End If
+        If t > 1 Then
+            p = (t - 1) / .55
+            If p > 1 Then p = 1
+            dimScreen 90 * p
+            ' the title falls, lands with a thud, and settles with a bounce
+            If p < .6 Then
+                ty = -60 + 170 * (p / .6) ^ 2
+            Else
+                If Not landed Then sfx SFX_ARRIVE: shake = 7: landed = TRUE
+                ty = 110 - 16 * Sin((p - .6) / .4 * 3.1416)
+            End If
+            bigText "LEAP LINE", SW / 2, ty, 6, _RGB32(255, 255, 255)
+            shake = shake * .88
+        End If
+        If r <= 0 Then
+            Line (0, 0)-(SW - 1, SH - 1), _RGB32(30, 26, 46), BF
+        ElseIf r < 520 Then
+            For y = 0 To SH - 1
+                dy = y - BIG_FEET
+                If Abs(dy) >= r Then
+                    Line (0, y)-(SW - 1, y), _RGB32(30, 26, 46)
+                Else
+                    x = Sqr(r * r - dy * dy)
+                    Line (0, y)-(SW / 2 - x, y), _RGB32(30, 26, 46)
+                    Line (SW / 2 + x, y)-(SW - 1, y), _RGB32(30, 26, 46)
+                End If
+            Next
+            Circle (SW / 2, BIG_FEET), r, _RGBA32(255, 230, 120, 160)
+        End If
+        ' the shadow stays on the floor, shrinking and fading as the hero rises
+        If r <= 0 Then
+            p = 1 - lift / 300
+            If p < .15 Then p = .15
+            For i = -4 To 4
+                x = 54 * p * Sqr(1 - (i / 5) ^ 2)
+                Line (SW / 2 - x, BIG_FEET + i)-(SW / 2 + x, BIG_FEET + i), _RGBA32(0, 0, 0, 70 * p), BF
+            Next
+        End If
+        ' dust kicked up at the take-off
+        If jumped And t < .85 Then
+            ' two puffs, each a few blobs that billow out and up, then shrink
+            p = (t - .5) / .35
+            For i = 0 To 7
+                k = 1 - 2 * (i Mod 2) ' left, right
+                x = SW / 2 + k * (26 + (40 + 22 * (i \ 2)) * Sqr(p))
+                u = BIG_FEET - 6 - (8 + 7 * (i \ 2)) * Sqr(p)
+                dy = (5 + 2 * (i \ 2)) * (1 - p * .7) ' half the puff's size
+                Line (x - dy, u - dy)-(x + dy, u + dy), _RGBA32(240, 236, 255, 150 * (1 - p)), BF
+            Next
+        End If
+        ' the hero, scaled about its feet
+        w = _Width(img): h = _Height(img)
+        x = SW / 2 - (14.5 + HERO_PAD) * BIG_SC * sx
+        u = feet - (28 + HERO_PAD) * BIG_SC * sy
+        _PutImage (x, u)-(x + w * sx - 1, u + h * sy - 1), img
+        _Display
+        _Limit 60
+    Loop
+    shake = 0
+    ' don't let the key or click that skipped it start a level
+    Do
+        While _MouseInput: Wend
+        _Limit 60
+    Loop While _MouseButton(1) Or _KeyDown(32)
+    Do While _KeyHit: Loop
+End Sub
+
 ' The progress log and the generated sounds (sfx/) live in the current
 ' folder, which QB64-PE sets to the program's own folder. A macOS .app
 ' bundle (see tools/release.sh) ships the sounds in Contents/Resources/sfx,
@@ -1851,6 +2039,7 @@ Sub initHeroSprites
             heroImg(pose * HERO_SQ + q) = makeHeroFrame(pose, (q - HERO_SQ \ 2) * .2, 1)
             rawWrites heroImg(pose * HERO_SQ + q), FALSE
         Next
+        loadTick
     Next
     sprPack = makePack
     rawWrites sprPack, FALSE
@@ -1878,10 +2067,28 @@ Function heroLight! (px As Single, py As Single, cx As Single, cy As Single, rx 
 End Function
 
 ' s > 0 squashes (wide, short), s < 0 stretches (tall, thin). The sprite is
-' 28 x 28 times sc. sc > 1 draws a big, sharp hero for the icon and cover,
-' with a margin of HERO_PAD units all round so the tails and feet aren't cut.
+' 28 x 28 times sc. sc > 1 draws a big, sharp hero (the loading screen and
+' intro, the icon and cover), with a margin of HERO_PAD units all round so
+' the tails and feet aren't cut.
 Function makeHeroFrame& (pose As Long, s As Single, sc As Long)
-    Dim img As Long, px As Long, py As Long, X As Single, Y As Single, d As Single, e As Single
+    Dim img As Long
+    img = heroCanvas(sc)
+    paintHero img, pose, s, sc, 0, _Height(img) - 1
+    _Dest 0
+    makeHeroFrame& = img
+End Function
+
+' An empty image for makeHeroFrame / paintHero, ready to be painted into.
+Function heroCanvas& (sc As Long)
+    Dim pad As Long
+    If sc > 1 Then pad = HERO_PAD
+    heroCanvas& = newSprite((28 + pad * 2) * sc, (28 + pad * 2) * sc)
+End Function
+
+' Paints rows y0 to y1 of a hero frame into img (made by heroCanvas), so a
+' big one can be drawn a band at a time, as the loading screen does.
+Sub paintHero (img As Long, pose As Long, s As Single, sc As Long, y0 As Long, y1 As Long)
+    Dim px As Long, py As Long, X As Single, Y As Single, d As Single, e As Single
     Dim ink As _Unsigned Long, red As _Unsigned Long, redDark As _Unsigned Long
     Dim bx As Single, by As Single, rx As Single, ry As Single, bob As Single, lt As Single
     Dim f1x As Single, f1y As Single, f2x As Single, f2y As Single, ph As Single
@@ -1920,10 +2127,10 @@ Function makeHeroFrame& (pose As Long, s As Single, sc As Long)
 
     Dim pad As Long
     If sc > 1 Then pad = HERO_PAD
-    img = newSprite((28 + pad * 2) * sc, (GY + pad * 2) * sc)
+    _Dest img
     covScale = sc
-    For py = 0 To (GY + pad * 2) * sc - 1
-        For px = 0 To (28 + pad * 2) * sc - 1
+    For py = y0 To y1
+        For px = 0 To _Width(img) - 1
             X = (px + .5) / sc - pad: Y = (py + .5) / sc - pad
             pxBegin
             ' headband tails, back one first
@@ -1962,9 +2169,7 @@ Function makeHeroFrame& (pose As Long, s As Single, sc As Long)
         Next
     Next
     covScale = 1
-    _Dest 0
-    makeHeroFrame& = img
-End Function
+End Sub
 
 ' The jetpack the hero wears: a canister with a nozzle, lit from the left.
 Function makePack&
@@ -1987,6 +2192,10 @@ Function makePack&
     Next
     _Dest 0
     makePack& = img
+End Function
+
+Function minf! (a As Single, b As Single)
+    If a < b Then minf! = a Else minf! = b
 End Function
 
 Function maxf! (a As Single, b As Single)
@@ -3647,6 +3856,7 @@ $Else
         makeSoundIfMissing names(i)
 $End If
         sounds(i) = _SndOpen(sfxPath(names(i)))
+        loadTick
     Next
     For i = 0 To 4
 $If WEB Then
@@ -3654,23 +3864,32 @@ $Else
         makeMusicIfMissing i
 $End If
         music(i) = _SndOpen(sfxPath("music" + LTrim$(Str$(i))))
+        loadTick
     Next
 $If WEB Then
 $Else
     makeVictoryIfMissing
 $End If
     victorySong = _SndOpen(sfxPath("victory"))
+    loadTick
 End Sub
 
 ' The current level's theme tune loops while you play (and on the title
-' screen, for the level picked there). Dying stops it, and the next attempt
-' starts it over from the top (_SndStop rewinds). Winning swaps it for the
+' screen, for the level picked there). Starting the level from the title,
+' or dying, stops it, so the attempt starts it over from the top (_SndStop
+' rewinds). Winning swaps it for the
 ' victory song, which plays once and is cut short if you move on before it
 ' ends. M mutes it all along with everything else.
 Sub updateMusic
     Static playing As Long ' theme + 1 of the tune playing, 0 = none
     Static cheering As Long ' the victory song is playing
+    Static onTitle As Long ' the title screen was showing last time
     Dim want As Long, won As Long
+    If onTitle And gameState <> ST_TITLE And playing > 0 Then
+        _SndStop music(playing - 1) ' left the title: the level starts the tune afresh
+        playing = 0
+    End If
+    onTitle = (gameState = ST_TITLE)
     won = (gameState = ST_WON Or gameState = ST_END) And Not muted And Not headless And victorySong > 0
     If won <> cheering Then
         If won Then _SndPlay victorySong Else _SndStop victorySong
