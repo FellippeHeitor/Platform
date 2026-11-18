@@ -246,6 +246,8 @@ Dim Shared themes(0 To 4) As Theme, th As Theme
 Dim Shared levelImg As Long, skyImg As Long, farImg As Long, nearImg As Long
 Const HERO_SQ = 7 ' squash steps per pose, -0.6 .. 0.6
 Dim Shared heroImg(0 To 9 * HERO_SQ - 1) As Long, sprPack As Long
+' left-facing copies (free move): QBJS can't mirror by swapping _PutImage corners
+Dim Shared heroImgL(0 To 9 * HERO_SQ - 1) As Long, sprPackL As Long
 Dim Shared sprSpikeUp As Long, sprSpikeDown As Long, sprGem As Long, sprPortal As Long
 Dim Shared sprJet As Long, sprFlame As Long, sprWingsBody As Long, sprWingL As Long, sprWingR As Long
 Dim Shared sprCroc(0 To 2) As Long, sprLeaf As Long, sprClump As Long
@@ -2038,12 +2040,33 @@ Sub initHeroSprites
         For q = 0 To HERO_SQ - 1
             heroImg(pose * HERO_SQ + q) = makeHeroFrame(pose, (q - HERO_SQ \ 2) * .2, 1)
             rawWrites heroImg(pose * HERO_SQ + q), FALSE
+            heroImgL(pose * HERO_SQ + q) = mirrorSprite(heroImg(pose * HERO_SQ + q))
         Next
         loadTick
     Next
     sprPack = makePack
     rawWrites sprPack, FALSE
+    sprPackL = mirrorSprite(sprPack)
 End Sub
+
+' A left-right mirrored copy of a sprite. (Swapping the x corners of
+' _PutImage mirrors in QB64-PE but not in QBJS, so we keep real copies.)
+Function mirrorSprite& (src As Long)
+    Dim img As Long, x As Long, y As Long, w As Long, h As Long, os As Long
+    w = _Width(src): h = _Height(src)
+    os = _Source
+    img = newSprite(w, h)
+    _Source src
+    For y = 0 To h - 1
+        For x = 0 To w - 1
+            PSet (w - 1 - x, y), Point(x, y)
+        Next
+    Next
+    _Source os
+    _Dest 0
+    rawWrites img, FALSE
+    mirrorSprite& = img
+End Function
 
 ' Ellipse distance (approximate away from the edge, which is all we need).
 Function sdEllipse! (px As Single, py As Single, cx As Single, cy As Single, rx As Single, ry As Single)
@@ -2782,19 +2805,25 @@ Sub drawHero (cx As Long, oy As Long, vis As Single)
     If vis >= 1 And hero.mode = MODE_JET Then
         If hero.thrust Then
             fl = .7 + Rnd * .4
-            _PutImage (bx - 13 * fs, gy - 6)-(bx - 7 * fs, gy - 6 + 12 * fl), sprFlame
+            If fs > 0 Then _PutImage (bx - 13, gy - 6)-(bx - 7, gy - 6 + 12 * fl), sprFlame Else _PutImage (bx + 7, gy - 6)-(bx + 13, gy - 6 + 12 * fl), sprFlame
         End If
-        _PutImage (bx - 15 * fs, gy - 19)-(bx - 7 * fs, gy - 6), sprPack
+        If fs > 0 Then _PutImage (bx - 15, gy - 19)-(bx - 7, gy - 6), sprPack Else _PutImage (bx + 7, gy - 19)-(bx + 15, gy - 6), sprPackL
     ElseIf vis >= 1 And hero.mode = MODE_WINGS Then
         fl = .35 + .65 * (.5 + .5 * Sin(frameCount / 3)) ' flap
-        _PutImage (bx - 20 * fs, gy - 15 - 7 * fl)-(bx - 4 * fs, gy - 15 + 7 * fl), sprWingL
+        If fs > 0 Then _PutImage (bx - 20, gy - 15 - 7 * fl)-(bx - 4, gy - 15 + 7 * fl), sprWingL Else _PutImage (bx + 4, gy - 15 - 7 * fl)-(bx + 20, gy - 15 + 7 * fl), sprWingR
     End If
 
     ' vis < 1 squeezes the hero into a thin, tall sliver (teleports)
     w = 28 * vis
     h = 28 * (1 + (1 - vis) * .8)
-    ' facing left: swapping the x corners mirrors the image
-    If w >= 1 Then _PutImage (bx - (w / 2 - .5) * fs, gy - h)-(bx + (w / 2 - .5) * fs, gy - 1), heroImg(f * HERO_SQ + q)
+    ' facing left: the mirrored copies
+    If w >= 1 Then
+        If fs > 0 Then
+            _PutImage (bx - (w / 2 - .5), gy - h)-(bx + (w / 2 - .5), gy - 1), heroImg(f * HERO_SQ + q)
+        Else
+            _PutImage (bx - (w / 2 - .5), gy - h)-(bx + (w / 2 - .5), gy - 1), heroImgL(f * HERO_SQ + q)
+        End If
+    End If
     If vis < 1 Then Exit Sub
 
     ' free move: a bobbing arrow when standing in a portal you can enter
