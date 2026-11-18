@@ -1,2 +1,6 @@
 leapline.log
 dist/
+mrJumpS
+.gitignore
+.DS_Store
+mrJumpS_start.command
